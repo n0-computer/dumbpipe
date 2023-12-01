@@ -782,7 +782,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dumb-pipe"
+name = "dumbpipe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
