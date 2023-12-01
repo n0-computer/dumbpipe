@@ -104,13 +104,15 @@ jobs:
       - name: cargo check
         run: cargo check --workspace --all-features --bins
 
-  minimal-crates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: swatinem/rust-cache@v2
-      - name: cargo check
-        run: |
-          rm -f Cargo.lock
-          cargo +nightly check -Z minimal-versions --workspace --all-features --bins
+  # Minimal crates needs adding proc-macro 1.0.66 as a dev dependency.
+  # Since it is not necessary for a bin project, disabled.
+  # minimal-crates:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #     - uses: dtolnay/rust-toolchain@nightly
+  #     - uses: swatinem/rust-cache@v2
+  #     - name: cargo check
+  #       run: |
+  #         rm -f Cargo.lock
+  #         cargo +nightly check -Z minimal-versions --workspace --all-features --bins
