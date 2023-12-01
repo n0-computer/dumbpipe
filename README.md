@@ -5,6 +5,12 @@ with a QUIC connection.
 
 It is also useful as a standalone tool for quick copy jobs.
 
+# Installation
+
+```
+cargo install dumbpipe
+```
+
 # Example
 
 Use dumbpipe to stream video using [ffmpeg / ffplay](https://ffmpeg.org/):
