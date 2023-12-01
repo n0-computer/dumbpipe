@@ -1,10 +1,9 @@
 //! Command line arguments.
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use iroh_net::{MagicEndpoint, NodeAddr, NodeId};
+use iroh_net::{MagicEndpoint, NodeAddr};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, str::FromStr};
-use tokio::io::{AsyncRead, AsyncWrite};
 
 const ALPN: &[u8] = b"DUMBPIPEV0";
 
@@ -58,9 +57,7 @@ impl NodeTicket {
 
     /// Deserialize from a string.
     fn deserialize(str: &str) -> anyhow::Result<Self> {
-        let base32 = if str.starts_with("node") {
-            &str[4..]
-        } else {
+        let Some(base32) = str.strip_prefix("node") else {
             anyhow::bail!("invalid prefix");
         };
         let bytes = data_encoding::BASE32_NOPAD
@@ -123,18 +120,26 @@ async fn listen(args: ListenArgs) -> anyhow::Result<()> {
         .alpns(vec![ALPN.to_vec()])
         .bind(args.port)
         .await?;
+    // wait for the endpoint to figure out its address before making a ticket
     while endpoint.my_derp().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let addr = endpoint.my_addr().await?;
     let ticket = NodeTicket { addr };
-    eprintln!("Listening. To connect, use:\n{}", ticket.serialize());
+    eprintln!(
+        "Listening. To connect, use:\ndumbpipe connect {}",
+        ticket.serialize()
+    );
 
     while let Some(connecting) = endpoint.accept().await {
         let Ok(connection) = connecting.await else {
             continue;
         };
-        if let Ok((s, r)) = connection.accept_bi().await {
+        if let Ok((s, mut r)) = connection.accept_bi().await {
+            // read the handshake and verify it
+            let mut buf = [0u8; 5];
+            r.read_exact(&mut buf).await?;
+            anyhow::ensure!(&buf == b"hello", "invalid hello");
             forward_stdio(s, r).await?;
         }
         break;
@@ -149,7 +154,10 @@ async fn connect(args: ConnectArgs) -> anyhow::Result<()> {
         .await?;
     let addr = args.ticket.addr;
     let connection = endpoint.connect(addr, ALPN).await?;
-    let (s, r) = connection.open_bi().await?;
+    let (mut s, r) = connection.open_bi().await?;
+    // the connecting side must write first. we don't know if there will be something
+    // on stdin, so just write a handshake.
+    s.write_all(b"hello").await?;
     forward_stdio(s, r).await?;
     Ok(())
 }
