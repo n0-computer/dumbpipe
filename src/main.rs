@@ -220,6 +220,7 @@ async fn connect(args: ConnectArgs) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     let args = Args::parse();
     let res = match args.command {
         Commands::Listen(args) => listen(args).await,
