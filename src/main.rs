@@ -17,9 +17,18 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Listen on a magicsocket and forward stdin/stdout to the first incoming
+    /// bidi stream.
     Listen(ListenArgs),
-    Connect(ConnectArgs),
+    /// Listen on a magicsocket and forward incoming connections to the specified
+    /// host and port. Every incoming bidi stream is forwarded to a new connection.
     ForwardTcp(ForwardTcpArgs),
+    /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
+    /// to it.
+    Connect(ConnectArgs),
+    /// Listen on a magicsocket and forward incoming connections to the specified
+    /// host and port. Every incoming bidi stream is forwarded to a new connection.
+    ListenTcp(ListenTcpArgs),
 }
 
 /// A token containing everything to get a file from the provider.
@@ -90,7 +99,7 @@ impl FromStr for NodeTicket {
 pub struct ListenArgs {
     /// The port to listen on.
     #[clap(long, default_value_t = 0)]
-    pub port: u16,
+    pub magic_port: u16,
 
     /// The secret key to use. Random by default.
     #[clap(long)]
@@ -105,6 +114,24 @@ pub struct ForwardTcpArgs {
     /// The port to forward to.
     #[clap(long, default_value_t = 0)]
     pub port: u16,
+
+    /// The secret key to use. Random by default.
+    #[clap(long)]
+    pub secret: Option<iroh_net::key::SecretKey>,
+}
+
+#[derive(Parser, Debug)]
+pub struct ListenTcpArgs {
+    /// The port to listen on for incoming tcp connections.
+    #[clap(long)]
+    pub port: u16,
+
+    /// The port to use for the magicsocket. Random by default.
+    #[clap(long, default_value_t = 0)]
+    pub magic_port: u16,
+
+    /// The node to connect to
+    pub ticket: NodeTicket,
 
     /// The secret key to use. Random by default.
     #[clap(long)]
@@ -188,7 +215,7 @@ async fn listen(args: ListenArgs) -> anyhow::Result<()> {
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![ALPN.to_vec()])
         .secret_key(secret_key)
-        .bind(args.port)
+        .bind(args.magic_port)
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
     while endpoint.my_derp().is_none() {
@@ -236,6 +263,29 @@ async fn connect(args: ConnectArgs) -> anyhow::Result<()> {
     // on stdin, so just write a handshake.
     s.write_all(b"hello").await?;
     forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+    Ok(())
+}
+
+async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
+    let secret_key = args.secret.unwrap_or_else(|| {
+        let res = iroh_net::key::SecretKey::generate();
+        eprintln!("using secret key {}", res);
+        res
+    });
+    let endpoint = MagicEndpoint::builder()
+        .alpns(vec![ALPN.to_vec()])
+        .secret_key(secret_key)
+        .bind(args.magic_port)
+        .await?;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", args.port)).await?;
+    loop {
+        let Ok((stream, addr)) = listener.accept().await else {
+            continue;
+        };
+        eprintln!("got connection from {}", addr);
+        let connection = endpoint.connect(args.ticket.addr.clone(), ALPN).await?;
+        let (mut s, r) = connection.open_bi().await?;
+    }
     Ok(())
 }
 
@@ -295,6 +345,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Listen(args) => listen(args).await,
         Commands::Connect(args) => connect(args).await,
         Commands::ForwardTcp(args) => forward_tcp(args).await,
+        Commands::ListenTcp(args) => listen_tcp(args).await,
     };
     match res {
         Ok(()) => std::process::exit(0),
