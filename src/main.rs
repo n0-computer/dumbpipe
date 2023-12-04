@@ -1,15 +1,11 @@
 //! Command line arguments.
-use anyhow::Context;
 use clap::{Parser, Subcommand};
-use iroh_net::{
-    key::SecretKey,
-    magic_endpoint::{get_alpn, get_remote_node_id},
-    MagicEndpoint, NodeAddr,
-};
-use serde::{Deserialize, Serialize};
-use std::{fmt::Display, io, net::ToSocketAddrs, str::FromStr};
-use tokio::io::{AsyncRead, AsyncWrite};
+use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint};
+use std::{io, net::ToSocketAddrs};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
+mod node_ticket;
+use node_ticket::NodeTicket;
 
 /// The ALPN protocol for dumbpipe.
 ///
@@ -58,72 +54,6 @@ pub enum Commands {
     ///
     /// A node ticket is required to connect.
     Connect(ConnectArgs),
-}
-
-/// A token containing everything to get a file from the provider.
-///
-/// It is a single item which can be easily serialized and deserialized.
-///
-/// TODO: find a way to move this to iroh-net.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeTicket {
-    /// The address of the node.
-    addr: NodeAddr,
-}
-
-impl NodeTicket {
-    /// Serialize to postcard bytes.
-    fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_stdvec(&self).expect("postcard::to_stdvec is infallible")
-    }
-
-    /// Deserialize from postcard bytes.
-    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        let ticket: Self = postcard::from_bytes(bytes)?;
-        ticket.verify().context("invalid ticket")?;
-        Ok(ticket)
-    }
-
-    /// Verify this ticket.
-    fn verify(&self) -> anyhow::Result<()> {
-        // do we need this? a ticket with just a node id still might be useful
-        // given some sort of discovery mechanism.
-        anyhow::ensure!(!self.addr.info.is_empty(), "no node info");
-        Ok(())
-    }
-
-    /// Serialize to string.
-    fn serialize(&self) -> String {
-        let mut out = "node".to_string();
-        data_encoding::BASE32_NOPAD.encode_append(&self.to_bytes(), &mut out);
-        out.make_ascii_lowercase();
-        out
-    }
-
-    /// Deserialize from a string.
-    fn deserialize(str: &str) -> anyhow::Result<Self> {
-        let Some(base32) = str.strip_prefix("node") else {
-            anyhow::bail!("invalid prefix");
-        };
-        let bytes = data_encoding::BASE32_NOPAD
-            .decode(base32.to_ascii_uppercase().as_bytes())
-            .context("invalid base32")?;
-        Self::from_bytes(&bytes)
-    }
-}
-
-impl Display for NodeTicket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.serialize())
-    }
-}
-
-impl FromStr for NodeTicket {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::deserialize(s)
-    }
 }
 
 #[derive(Parser, Debug)]
@@ -268,10 +198,10 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     }
     let addr = endpoint.my_addr().await?;
     let ticket = NodeTicket { addr };
-    eprintln!(
-        "Listening. To connect, use:\ndumbpipe connect {}",
-        ticket.serialize()
-    );
+    // print the ticket on stderr so it doesn't interfere with the data itself
+    //
+    // note that the tests rely on the ticket being the last thing printed
+    eprintln!("Listening. To connect, use:\ndumbpipe connect {}", ticket);
 
     while let Some(connecting) = endpoint.accept().await {
         let connection = match connecting.await {
@@ -325,6 +255,7 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     s.write_all(&HANDSHAKE).await?;
     tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
     forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+    tokio::io::stdout().flush().await?;
     Ok(())
 }
 
@@ -406,9 +337,13 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     }
     let addr = endpoint.my_addr().await?;
     let ticket = NodeTicket { addr };
+
+    // print the ticket on stderr so it doesn't interfere with the data itself
+    //
+    // note that the tests rely on the ticket being the last thing printed
     eprintln!(
-        "Forwarding incoming requests to '{}'. Use node ticket '{}' to connect",
-        args.host, ticket,
+        "Forwarding incoming requests to '{}'. To connect, use e.g.:\ndumbpipe connect {}",
+        args.host, ticket
     );
 
     while let Some(connecting) = endpoint.accept().await {
