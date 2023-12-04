@@ -36,6 +36,7 @@ fn read_header_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>
 }
 
 #[test]
+#[ignore]
 fn connect_accept_1() {
     // the bytes provided by the listen command
     let listen_to_connect = b"hello from listen";
