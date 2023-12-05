@@ -1,6 +1,6 @@
 [package]
 name = "dumbpipe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>"]
 keywords = ["netcat", "cli", "network", "p2p", "holepunching"]
@@ -27,3 +27,4 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [dev-dependencies]
 duct = "0.13.6"
+nix = { version = "0.27", features = ["signal", "process"] }
