@@ -102,9 +102,11 @@ pub struct ListenTcpArgs {
 
 #[derive(Parser, Debug)]
 pub struct ConnectTcpArgs {
-    /// The interfaces to listen on for incoming tcp connections.
+    /// The addresses to listen on for incoming tcp connections.
+    ///
+    /// To listen on all network interfaces, use 0.0.0.0:12345
     #[clap(long)]
-    pub host: String,
+    pub addr: String,
 
     /// The port to use for the magicsocket. Random by default.
     #[clap(long, default_value_t = 0)]
@@ -310,9 +312,9 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
 /// Listen on a tcp port and forward incoming connections to a magicsocket.
 async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
     let addrs = args
-        .host
+        .addr
         .to_socket_addrs()
-        .context(format!("invalid host string {}", args.host))?;
+        .context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret(args.secret);
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![ALPN.to_vec()])

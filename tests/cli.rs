@@ -154,6 +154,14 @@ fn connect_listen_ctrlc_listen() {
 
 #[test]
 fn listen_tcp_happy() {
+    // start a dummy tcp server and wait for a single incoming connection
+    std::thread::spawn(|| {
+        let server = TcpListener::bind("localhost:3000").unwrap();
+        let (mut stream, _addr) = server.accept().unwrap();
+        stream.write_all(b"hello from tcp").unwrap();
+        stream.flush().unwrap();
+        drop(stream);
+    });
     // start a dumbpipe listen-tcp process
     let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", "localhost:3000"])
         .env_remove("RUST_LOG") // disable tracing
@@ -164,14 +172,6 @@ fn listen_tcp_happy() {
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = NodeTicket::from_str(ticket).unwrap();
-    // start a dummy tcp server and wait for a single incoming connection
-    std::thread::spawn(|| {
-        let server = TcpListener::bind("localhost:3000").unwrap();
-        let (mut stream, _addr) = server.accept().unwrap();
-        stream.write_all(b"hello from tcp").unwrap();
-        stream.flush().unwrap();
-        drop(stream);
-    });
     // poke the listen-tcp process with a connect command
     let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
@@ -202,7 +202,7 @@ fn connect_tcp_happy() {
     // start a dumbpipe connect-tcp process
     let _connect_tcp = duct::cmd(
         dumbpipe_bin(),
-        ["connect-tcp", "--host", "localhost:3001", &ticket],
+        ["connect-tcp", "--addr", "localhost:3001", &ticket],
     )
     .env_remove("RUST_LOG") // disable tracing
     .stderr_to_stdout() //
