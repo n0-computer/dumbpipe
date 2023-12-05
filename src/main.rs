@@ -1,8 +1,15 @@
 //! Command line arguments.
+use anyhow::Context;
 use clap::{Parser, Subcommand};
-use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint};
-use std::{io, net::ToSocketAddrs};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint, NodeAddr};
+use std::{
+    io,
+    net::{SocketAddr, ToSocketAddrs},
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    select,
+};
 use tokio_util::sync::CancellationToken;
 mod node_ticket;
 use node_ticket::NodeTicket;
@@ -18,6 +25,18 @@ const ALPN: &[u8] = b"DUMBPIPEV0";
 /// calls accept_bi() must consume it.
 const HANDSHAKE: [u8; 5] = *b"hello";
 
+/// Create a dumb pipe between two machines, using an iroh magicsocket.
+///
+/// One side listens, the other side connects. Both sides are identified by a
+/// 32 byte node id.
+///
+/// Connecting to a node id is independent of its IP address. Dumbpipe will try
+/// to establish a direct connection even through NATs and firewalls. If that
+/// fails, it will fall back to using a relay server.
+///
+/// For all subcommands, you can specify a secret key. If you don't, a random
+/// one will be generated. You can also specify a port for the magicsocket. If
+/// you don't, a random one will be chosen.
 #[derive(Parser, Debug)]
 pub struct Args {
     #[clap(subcommand)]
@@ -41,19 +60,19 @@ pub enum Commands {
     /// connecting to a TCP socket for which you have to specify the host and port.
     ListenTcp(ListenTcpArgs),
 
+    /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout.
+    ///
+    /// A node ticket is required to connect.
+    Connect(ConnectArgs),
+
     /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
     /// to it.
     ///
     /// A node ticket is required to connect.
     ///
     /// As far as the magic socket is concerned, this is connecting. But it is
-    /// listening on a TCP socket for which you have to specify the port.
+    /// listening on a TCP socket for which you have to specify the interface and port.
     ConnectTcp(ConnectTcpArgs),
-
-    /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout.
-    ///
-    /// A node ticket is required to connect.
-    Connect(ConnectArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -229,7 +248,10 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     // note that the tests rely on the ticket being the last thing printed
     eprintln!("Listening. To connect, use:\ndumbpipe connect {}", ticket);
 
-    while let Some(connecting) = endpoint.accept().await {
+    loop {
+        let Some(connecting) = endpoint.accept().await else {
+            break;
+        };
         let connection = match connecting.await {
             Ok(connection) => connection,
             Err(cause) => {
@@ -287,16 +309,17 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
 
 /// Listen on a tcp port and forward incoming connections to a magicsocket.
 async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
-    let addrs = match args.host.to_socket_addrs() {
-        Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(e) => anyhow::bail!("invalid host string {}: {}", args.host, e),
-    };
+    let addrs = args
+        .host
+        .to_socket_addrs()
+        .context(format!("invalid host string {}", args.host))?;
     let secret_key = get_or_create_secret(args.secret);
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![ALPN.to_vec()])
         .secret_key(secret_key)
         .bind(args.magic_port)
-        .await?;
+        .await
+        .context("unable to bind magicsock")?;
     tracing::info!("tcp listening on {:?}", addrs);
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -305,6 +328,27 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    async fn handle_tcp_accept(
+        next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
+        addr: NodeAddr,
+        endpoint: MagicEndpoint,
+    ) -> anyhow::Result<()> {
+        let (tcp_stream, tcp_addr) = next.context("error accepting tcp connection")?;
+        let (tcp_recv, tcp_send) = tcp_stream.into_split();
+        tracing::info!("got tcp connection from {}", tcp_addr);
+        let remote_node_id = addr.node_id;
+        let connection = endpoint
+            .connect(addr, ALPN)
+            .await
+            .context(format!("error connecting to {}", remote_node_id))?;
+        let (mut magic_send, magic_recv) = connection
+            .open_bi()
+            .await
+            .context(format!("error opening bidi stream to {}", remote_node_id))?;
+        magic_send.write_all(&HANDSHAKE).await?;
+        forward_bidi(tcp_recv, tcp_send, magic_recv, magic_send).await?;
+        anyhow::Ok(())
+    }
     let addr = args.ticket.addr;
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
@@ -315,31 +359,15 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
                 break;
             }
         };
-        let (tcp_stream, tcp_addr) = match next {
-            Ok(x) => x,
-            Err(cause) => {
-                tracing::warn!("error accepting tcp connection: {}", cause);
-                // if accept fails, we want to continue accepting connections
-                continue;
-            }
-        };
         let endpoint = endpoint.clone();
         let addr = addr.clone();
         tokio::spawn(async move {
-            let (tcp_recv, tcp_send) = tcp_stream.into_split();
-            tracing::info!("got tcp connection from {}", tcp_addr);
-            let remote_node_id = addr.node_id;
-            let connection = endpoint.connect(addr, ALPN).await.map_err(|e| {
-                tracing::error!("error connecting to {}: {}", remote_node_id, e);
-                e
-            })?;
-            let (mut magic_send, magic_recv) = connection.open_bi().await.map_err(|e| {
-                tracing::error!("error opening bidi stream to {}: {}", remote_node_id, e);
-                e
-            })?;
-            magic_send.write_all(&HANDSHAKE).await?;
-            forward_bidi(tcp_recv, tcp_send, magic_recv, magic_send).await?;
-            anyhow::Ok(())
+            if let Err(cause) = handle_tcp_accept(next, addr, endpoint).await {
+                // log error at warn level
+                //
+                // we should know about it, but it's not fatal
+                tracing::warn!("error handling connection: {}", cause);
+            }
         });
     }
     Ok(())
@@ -372,42 +400,50 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         args.host, ticket
     );
 
-    while let Some(connecting) = endpoint.accept().await {
-        let connection = match connecting.await {
-            Ok(connection) => connection,
-            Err(cause) => {
-                tracing::warn!("error accepting connection: {}", cause);
-                // if accept fails, we want to continue accepting connections
-                continue;
-            }
-        };
+    // handle a new incoming connection on the magic endpoint
+    async fn handle_magic_accept(
+        connecting: quinn::Connecting,
+        addrs: Vec<std::net::SocketAddr>,
+    ) -> anyhow::Result<()> {
+        let connection = connecting.await.context("error accepting connection")?;
         let remote_node_id = get_remote_node_id(&connection)?;
         tracing::info!("got connection from {}", remote_node_id);
-        let (s, mut r) = match connection.accept_bi().await {
-            Ok(x) => x,
-            Err(cause) => {
-                tracing::warn!("error accepting stream: {}", cause);
-                // if accept_bi fails, we want to continue accepting connections
-                continue;
-            }
-        };
+        let (s, mut r) = connection
+            .accept_bi()
+            .await
+            .context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_node_id);
         // read the handshake and verify it
         let mut buf = [0u8; 5];
         r.read_exact(&mut buf).await?;
         anyhow::ensure!(buf == HANDSHAKE, "invalid handshake");
+        let connection = tokio::net::TcpStream::connect(addrs.as_slice())
+            .await
+            .context(format!("error connecting to {:?}", addrs))?;
+        let (read, write) = connection.into_split();
+        forward_bidi(read, write, r, s).await?;
+        Ok(())
+    }
+
+    loop {
+        let connecting = select! {
+            connecting = endpoint.accept() => connecting,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("got ctrl-c, exiting");
+                break;
+            }
+        };
+        let Some(connecting) = connecting else {
+            break;
+        };
         let addrs = addrs.clone();
         tokio::spawn(async move {
-            let connection = match tokio::net::TcpStream::connect(addrs.as_slice()).await {
-                Ok(connection) => connection,
-                Err(cause) => {
-                    tracing::error!("error connecting to {:?}: {}", addrs, cause);
-                    return Ok(());
-                }
-            };
-            let (read, write) = connection.into_split();
-            forward_bidi(read, write, r, s).await?;
-            anyhow::Ok(())
+            if let Err(cause) = handle_magic_accept(connecting, addrs).await {
+                // log error at warn level
+                //
+                // we should know about it, but it's not fatal
+                tracing::warn!("error handling connection: {}", cause);
+            }
         });
     }
     Ok(())

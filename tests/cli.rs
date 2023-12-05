@@ -1,7 +1,9 @@
 use crate::node_ticket::NodeTicket;
 use std::{
-    io::{self, Read},
+    io::{self, Read, Write},
+    net::{TcpListener, TcpStream},
     str::FromStr,
+    time::Duration,
 };
 #[path = "../src/node_ticket.rs"]
 mod node_ticket;
@@ -148,4 +150,71 @@ fn connect_listen_ctrlc_listen() {
     // listen command stops when the connect command stops.
     listen.read_to_end(&mut tmp).ok();
     connect.read_to_end(&mut tmp).ok();
+}
+
+#[test]
+fn listen_tcp_happy() {
+    // start a dumbpipe listen-tcp process
+    let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", "localhost:3000"])
+        .env_remove("RUST_LOG") // disable tracing
+        .stderr_to_stdout() //
+        .reader()
+        .unwrap();
+    let header = read_ascii_lines(3, &mut listen_tcp).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = NodeTicket::from_str(ticket).unwrap();
+    // start a dummy tcp server and wait for a single incoming connection
+    std::thread::spawn(|| {
+        let server = TcpListener::bind("localhost:3000").unwrap();
+        let (mut stream, _addr) = server.accept().unwrap();
+        stream.write_all(b"hello from tcp").unwrap();
+        stream.flush().unwrap();
+        drop(stream);
+    });
+    // poke the listen-tcp process with a connect command
+    let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+        .env_remove("RUST_LOG") // disable tracing
+        .stderr_null()
+        .stdout_capture()
+        .stdin_bytes(b"hello from connect")
+        .run()
+        .unwrap();
+    assert!(connect.status.success());
+    assert_eq!(&connect.stdout, b"hello from tcp");
+}
+
+#[test]
+fn connect_tcp_happy() {
+    // start a dumbpipe listen process just so the connect-tcp command has something to connect to
+    let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+        .env_remove("RUST_LOG") // disable tracing
+        .stdin_bytes(b"hello from listen\n")
+        .stderr_to_stdout() //
+        .reader()
+        .unwrap();
+    let header = read_ascii_lines(3, &mut listen).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = ticket.to_string();
+
+    // start a dumbpipe connect-tcp process
+    let _connect_tcp = duct::cmd(
+        dumbpipe_bin(),
+        ["connect-tcp", "--host", "localhost:3001", &ticket],
+    )
+    .env_remove("RUST_LOG") // disable tracing
+    .stderr_to_stdout() //
+    .reader()
+    .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+
+    //
+    let mut conn = TcpStream::connect("localhost:3001").unwrap();
+    conn.write_all(b"hello from tcp").unwrap();
+    conn.flush().unwrap();
+    let mut buf = Vec::new();
+    conn.read_to_end(&mut buf).unwrap();
+    assert_eq!(&buf, b"hello from listen\n");
 }
