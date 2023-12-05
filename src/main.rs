@@ -113,35 +113,52 @@ pub struct ConnectArgs {
     pub secret: Option<iroh_net::key::SecretKey>,
 }
 
-/// Copy from a reader to a quinn stream, calling finish() on the stream when
-/// the reader is done or the operation is cancelled.
+/// Copy from a reader to a quinn stream.
+///
+/// Will send a reset to the other side if the operation is cancelled, and fail
+/// with an error.
+///
+/// Returns the number of bytes copied in case of success.
 async fn copy_to_quinn(
     mut from: impl AsyncRead + Unpin,
     mut send: quinn::SendStream,
     token: CancellationToken,
-) -> anyhow::Result<()> {
+) -> io::Result<u64> {
+    tracing::trace!("copying to quinn");
     tokio::select! {
-        _ = tokio::io::copy(&mut from, &mut send) => {}
-        _ = token.cancelled() => {}
+        res = tokio::io::copy(&mut from, &mut send) => {
+            let size = res?;
+            send.finish().await?;
+            Ok(size)
+        }
+        _ = token.cancelled() => {
+            // send a reset to the other side immediately
+            send.reset(0u8.into()).ok();
+            Err(io::Error::new(io::ErrorKind::Other, "cancelled"))
+        }
     }
-    send.finish().await?;
-    Ok(())
 }
 
-/// Copy from a quinn stream to a writer, calling stop() on the stream when
-/// the writer is done or the operation is cancelled.
+/// Copy from a quinn stream to a writer.
+///
+/// Will send stop to the other side if the operation is cancelled, and fail
+/// with an error.
+///
+/// Returns the number of bytes copied in case of success.
 async fn copy_from_quinn(
     mut recv: quinn::RecvStream,
     mut to: impl AsyncWrite + Unpin,
     token: CancellationToken,
-) -> anyhow::Result<()> {
+) -> io::Result<u64> {
     tokio::select! {
-        _ = tokio::io::copy(&mut recv, &mut to) => {}
+        res = tokio::io::copy(&mut recv, &mut to) => {
+            Ok(res?)
+        },
         _ = token.cancelled() => {
-            recv.stop(0u8.into())?;
+            recv.stop(0u8.into()).ok();
+            Err(io::Error::new(io::ErrorKind::Other, "cancelled"))
         }
     }
-    Ok(())
 }
 
 /// Get the secret key or generate a new one.
@@ -153,6 +170,13 @@ fn get_or_create_secret(secret: Option<SecretKey>) -> SecretKey {
         eprintln!("using secret key {}", key);
         key
     })
+}
+
+fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
+    move |x| {
+        token.cancel();
+        x
+    }
 }
 
 /// Bidirectionally forward data from a quinn stream and an arbitrary tokio
@@ -168,20 +192,22 @@ async fn forward_bidi(
     let token2 = token1.clone();
     let token3 = token1.clone();
     let forward_from_stdin = tokio::spawn(async move {
-        copy_to_quinn(from1, to2, token1.clone()).await.ok();
-        token1.cancel();
+        copy_to_quinn(from1, to2, token1.clone())
+            .await
+            .map_err(cancel_token(token1))
     });
     let forward_to_stdout = tokio::spawn(async move {
-        copy_from_quinn(from2, to1, token2.clone()).await.ok();
-        token2.cancel();
+        copy_from_quinn(from2, to1, token2.clone())
+            .await
+            .map_err(cancel_token(token2))
     });
     let _control_c = tokio::spawn(async move {
         tokio::signal::ctrl_c().await?;
         token3.cancel();
         io::Result::Ok(())
     });
-    forward_to_stdout.await?;
-    forward_from_stdin.await?;
+    forward_to_stdout.await??;
+    forward_from_stdin.await??;
     Ok(())
 }
 
