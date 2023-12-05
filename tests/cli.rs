@@ -74,7 +74,7 @@ fn connect_listen_happy() {
 
 #[cfg(unix)]
 #[test]
-fn connect_listen_interrupt_connect() {
+fn connect_listen_ctrlc_connect() {
     use nix::{
         sys::signal::{self, Signal},
         unistd::Pid,
@@ -101,6 +101,45 @@ fn connect_listen_interrupt_connect() {
     // wait until we get a line from the listen process
     read_ascii_lines(1, &mut connect).unwrap();
     for pid in connect.pids() {
+        signal::kill(Pid::from_raw(pid as i32), Signal::SIGINT).unwrap();
+    }
+
+    let mut tmp = Vec::new();
+    // we don't care about the results. This test is just to make sure that the
+    // listen command stops when the connect command stops.
+    listen.read_to_end(&mut tmp).ok();
+    connect.read_to_end(&mut tmp).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn connect_listen_ctrlc_listen() {
+    use std::time::Duration;
+
+    use nix::{
+        sys::signal::{self, Signal},
+        unistd::Pid,
+    };
+    // the bytes provided by the listen command
+    let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+        .env_remove("RUST_LOG") // disable tracing
+        .stderr_to_stdout()
+        .reader()
+        .unwrap();
+    // read the first 3 lines of the header, and parse the last token as a ticket
+    let header = read_ascii_lines(3, &mut listen).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = NodeTicket::from_str(ticket).unwrap();
+
+    let mut connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+        .env_remove("RUST_LOG") // disable tracing
+        .stderr_null()
+        .stdout_capture()
+        .reader()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    for pid in listen.pids() {
         signal::kill(Pid::from_raw(pid as i32), Signal::SIGINT).unwrap();
     }
 
