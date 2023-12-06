@@ -28,3 +28,4 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 [dev-dependencies]
 duct = "0.13.6"
 nix = { version = "0.27", features = ["signal", "process"] }
+rand = "0.8.5"

@@ -1,9 +1,11 @@
+use rand::Rng;
+
 use crate::node_ticket::NodeTicket;
 use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Barrier},
     time::Duration,
 };
 #[path = "../src/node_ticket.rs"]
@@ -36,6 +38,15 @@ fn read_ascii_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>>
         }
     }
     Ok(res)
+}
+
+fn wait2() -> Arc<Barrier> {
+    Arc::new(Barrier::new(2))
+}
+
+/// generate a random, non privileged port
+fn random_port() -> u16 {
+    rand::thread_rng().gen_range(10000u16..60000)
 }
 
 /// Tests the basic functionality of the connect and listen pair
@@ -155,12 +166,14 @@ fn connect_listen_ctrlc_listen() {
 
 #[test]
 fn listen_tcp_happy() {
-    use std::sync::Barrier;
-    let b1 = Arc::new(Barrier::new(2));
+    let b1 = wait2();
     let b2 = b1.clone();
+    let port = random_port();
     // start a dummy tcp server and wait for a single incoming connection
+    let host_port = format!("localhost:{port}");
+    let host_port_2 = host_port.clone();
     std::thread::spawn(move || {
-        let server = TcpListener::bind("localhost:3002").unwrap();
+        let server = TcpListener::bind(host_port_2).unwrap();
         b1.wait();
         let (mut stream, _addr) = server.accept().unwrap();
         stream.write_all(b"hello from tcp").unwrap();
@@ -170,7 +183,7 @@ fn listen_tcp_happy() {
     // wait for the tcp listener to start
     b2.wait();
     // start a dumbpipe listen-tcp process
-    let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", "localhost:3002"])
+    let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", &host_port])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_to_stdout() //
         .reader()
@@ -193,6 +206,8 @@ fn listen_tcp_happy() {
 
 #[test]
 fn connect_tcp_happy() {
+    let port = random_port();
+    let host_port = format!("localhost:{port}");
     // start a dumbpipe listen process just so the connect-tcp command has something to connect to
     let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
@@ -209,7 +224,7 @@ fn connect_tcp_happy() {
     // start a dumbpipe connect-tcp process
     let _connect_tcp = duct::cmd(
         dumbpipe_bin(),
-        ["connect-tcp", "--addr", "localhost:3001", &ticket],
+        ["connect-tcp", "--addr", &host_port, &ticket],
     )
     .env_remove("RUST_LOG") // disable tracing
     .stderr_to_stdout() //
@@ -218,7 +233,7 @@ fn connect_tcp_happy() {
     std::thread::sleep(Duration::from_secs(1));
 
     //
-    let mut conn = TcpStream::connect("localhost:3001").unwrap();
+    let mut conn = TcpStream::connect(host_port).unwrap();
     conn.write_all(b"hello from tcp").unwrap();
     conn.flush().unwrap();
     let mut buf = Vec::new();
