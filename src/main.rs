@@ -14,17 +14,6 @@ use tokio_util::sync::CancellationToken;
 mod node_ticket;
 use node_ticket::NodeTicket;
 
-/// The ALPN protocol for dumbpipe.
-///
-/// It is basically just passing data through 1:1, except that the connecting
-/// side will send a fixed size handshake to make sure the stream is created.
-const ALPN: &[u8] = b"DUMBPIPEV0";
-/// The handshake to send when connecting.
-///
-/// The side that calls open_bi() first must send this handshake, the side that
-/// calls accept_bi() must consume it.
-const HANDSHAKE: [u8; 5] = *b"hello";
-
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
 /// One side listens, the other side connects. Both sides are identified by a
@@ -235,7 +224,7 @@ async fn forward_bidi(
 async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret(args.secret);
     let endpoint = MagicEndpoint::builder()
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![dumbpipe::ALPN.to_vec()])
         .secret_key(secret_key)
         .bind(args.magic_port)
         .await?;
@@ -276,7 +265,7 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
         // read the handshake and verify it
         let mut buf = [0u8; 5];
         r.read_exact(&mut buf).await?;
-        anyhow::ensure!(buf == HANDSHAKE, "invalid handshake");
+        anyhow::ensure!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
         forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
         // stop accepting connections after the first successful one
@@ -289,20 +278,20 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret(args.secret);
     let endpoint = MagicEndpoint::builder()
         .secret_key(secret_key)
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![dumbpipe::ALPN.to_vec()])
         .bind(args.port)
         .await?;
     let addr = args.ticket.addr;
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
-    let connection = endpoint.connect(addr, ALPN).await?;
+    let connection = endpoint.connect(addr, dumbpipe::ALPN).await?;
     tracing::info!("connected to {}", remote_node_id);
     // open a bidi stream, try only once
     let (mut s, r) = connection.open_bi().await?;
     tracing::info!("opened bidi stream to {}", remote_node_id);
     // the connecting side must write first. we don't know if there will be something
     // on stdin, so just write a handshake.
-    s.write_all(&HANDSHAKE).await?;
+    s.write_all(&dumbpipe::HANDSHAKE).await?;
     tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
     forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
     tokio::io::stdout().flush().await?;
@@ -317,7 +306,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         .context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret(args.secret);
     let endpoint = MagicEndpoint::builder()
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![dumbpipe::ALPN.to_vec()])
         .secret_key(secret_key)
         .bind(args.magic_port)
         .await
@@ -340,14 +329,14 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         tracing::info!("got tcp connection from {}", tcp_addr);
         let remote_node_id = addr.node_id;
         let connection = endpoint
-            .connect(addr, ALPN)
+            .connect(addr, dumbpipe::ALPN)
             .await
             .context(format!("error connecting to {}", remote_node_id))?;
         let (mut magic_send, magic_recv) = connection
             .open_bi()
             .await
             .context(format!("error opening bidi stream to {}", remote_node_id))?;
-        magic_send.write_all(&HANDSHAKE).await?;
+        magic_send.write_all(&dumbpipe::HANDSHAKE).await?;
         forward_bidi(tcp_recv, tcp_send, magic_recv, magic_send).await?;
         anyhow::Ok(())
     }
@@ -383,7 +372,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     };
     let secret_key = get_or_create_secret(args.secret);
     let endpoint = MagicEndpoint::builder()
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![dumbpipe::ALPN.to_vec()])
         .secret_key(secret_key)
         .bind(args.magic_port)
         .await?;
@@ -418,7 +407,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         // read the handshake and verify it
         let mut buf = [0u8; 5];
         r.read_exact(&mut buf).await?;
-        anyhow::ensure!(buf == HANDSHAKE, "invalid handshake");
+        anyhow::ensure!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
             .context(format!("error connecting to {:?}", addrs))?;

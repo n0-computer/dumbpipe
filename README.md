@@ -71,7 +71,3 @@ connect-tcp --addr 0.0.0.0:3001 <ticket>
 ### Testing it
 
 You can now browse the website on port 3001.
-
-# Need a dumb pipe as well?
-
-Dumb pipe is a very simple command line tool that uses [iroh](https://github.com/n0-computer/iroh) .
