@@ -5,6 +5,7 @@ use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint
 use std::{
     io,
     net::{SocketAddr, ToSocketAddrs},
+    str::FromStr,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -23,9 +24,11 @@ use node_ticket::NodeTicket;
 /// to establish a direct connection even through NATs and firewalls. If that
 /// fails, it will fall back to using a relay server.
 ///
-/// For all subcommands, you can specify a secret key. If you don't, a random
-/// one will be generated. You can also specify a port for the magicsocket. If
-/// you don't, a random one will be chosen.
+/// For all subcommands, you can specify a secret key using the IROH_SECRET
+/// environment variable. If you don't, a random one will be generated.
+///
+/// You can also specify a port for the magicsocket. If you don't, a random one
+/// will be chosen.
 #[derive(Parser, Debug)]
 pub struct Args {
     #[clap(subcommand)]
@@ -69,10 +72,6 @@ pub struct ListenArgs {
     /// The port to listen on.
     #[clap(long, default_value_t = 0)]
     pub magic_port: u16,
-
-    /// The secret key to use. Random by default.
-    #[clap(long)]
-    pub secret: Option<iroh_net::key::SecretKey>,
 }
 
 #[derive(Parser, Debug)]
@@ -83,10 +82,6 @@ pub struct ListenTcpArgs {
     /// The port to use for the magicsocket. Random by default.
     #[clap(long, default_value_t = 0)]
     pub magic_port: u16,
-
-    /// The secret key to use. Random by default.
-    #[clap(long)]
-    pub secret: Option<iroh_net::key::SecretKey>,
 }
 
 #[derive(Parser, Debug)]
@@ -103,10 +98,6 @@ pub struct ConnectTcpArgs {
 
     /// The node to connect to
     pub ticket: NodeTicket,
-
-    /// The secret key to use. Random by default.
-    #[clap(long)]
-    pub secret: Option<iroh_net::key::SecretKey>,
 }
 
 #[derive(Parser, Debug)]
@@ -117,10 +108,6 @@ pub struct ConnectArgs {
     /// The port to bind to.
     #[clap(long, default_value_t = 0)]
     pub port: u16,
-
-    /// The secret key to use. Random by default.
-    #[clap(long)]
-    pub secret: Option<iroh_net::key::SecretKey>,
 }
 
 /// Copy from a reader to a quinn stream.
@@ -174,12 +161,15 @@ async fn copy_from_quinn(
 /// Get the secret key or generate a new one.
 ///
 /// Print the secret key to stderr if it was generated, so the user can save it.
-fn get_or_create_secret(secret: Option<SecretKey>) -> SecretKey {
-    secret.unwrap_or_else(|| {
-        let key = SecretKey::generate();
-        eprintln!("using secret key {}", key);
-        key
-    })
+fn get_or_create_secret() -> anyhow::Result<SecretKey> {
+    match std::env::var("IROH_SECRET") {
+        Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
+        Err(_) => {
+            let key = SecretKey::generate();
+            eprintln!("using secret key {}", key);
+            Ok(key)
+        }
+    }
 }
 
 fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
@@ -222,7 +212,7 @@ async fn forward_bidi(
 }
 
 async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
-    let secret_key = get_or_create_secret(args.secret);
+    let secret_key = get_or_create_secret()?;
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![dumbpipe::ALPN.to_vec()])
         .secret_key(secret_key)
@@ -275,7 +265,7 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
 }
 
 async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
-    let secret_key = get_or_create_secret(args.secret);
+    let secret_key = get_or_create_secret()?;
     let endpoint = MagicEndpoint::builder()
         .secret_key(secret_key)
         .alpns(vec![dumbpipe::ALPN.to_vec()])
@@ -304,7 +294,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         .addr
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
-    let secret_key = get_or_create_secret(args.secret);
+    let secret_key = get_or_create_secret()?;
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![dumbpipe::ALPN.to_vec()])
         .secret_key(secret_key)
@@ -370,7 +360,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         Ok(addrs) => addrs.collect::<Vec<_>>(),
         Err(e) => anyhow::bail!("invalid host string {}: {}", args.host, e),
     };
-    let secret_key = get_or_create_secret(args.secret);
+    let secret_key = get_or_create_secret()?;
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![dumbpipe::ALPN.to_vec()])
         .secret_key(secret_key)
@@ -390,6 +380,8 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         "Forwarding incoming requests to '{}'. To connect, use e.g.:\ndumbpipe connect {}",
         args.host, ticket
     );
+    tracing::info!("node id is {}", ticket.addr.node_id);
+    tracing::info!("derp region is {:?}", ticket.addr.info.derp_region);
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(
