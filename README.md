@@ -1,9 +1,14 @@
 # Dumb pipe
 
-This is an example to use iroh-net to create a dumb pipe to connect two machines
-with a QUIC connection.
+This is an example to use [iroh-net](https://crates.io/crates/iroh-net) to create a dumb pipe to connect two machines with a QUIC connection.
+
+Iroh-net will take case of hole punching and NAT traversal whenever possible, and fall back to a
+relay if hole punching does not succeed.
 
 It is also useful as a standalone tool for quick copy jobs.
+
+This is inspired by the unix tool [netcat](https://en.wikipedia.org/wiki/Netcat). While netcat
+works with IP addresses, dumbpipe works with 256 bit node ids and therefore is somewhat location transparent. In addition, connections are encrypted using TLS.
 
 # Installation
 

@@ -3,6 +3,7 @@ use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
+    sync::Arc,
     time::Duration,
 };
 #[path = "../src/node_ticket.rs"]
@@ -154,16 +155,22 @@ fn connect_listen_ctrlc_listen() {
 
 #[test]
 fn listen_tcp_happy() {
+    use std::sync::Barrier;
+    let b1 = Arc::new(Barrier::new(2));
+    let b2 = b1.clone();
     // start a dummy tcp server and wait for a single incoming connection
-    std::thread::spawn(|| {
-        let server = TcpListener::bind("localhost:3000").unwrap();
+    std::thread::spawn(move || {
+        let server = TcpListener::bind("localhost:3002").unwrap();
+        b1.wait();
         let (mut stream, _addr) = server.accept().unwrap();
         stream.write_all(b"hello from tcp").unwrap();
         stream.flush().unwrap();
         drop(stream);
     });
+    // wait for the tcp listener to start
+    b2.wait();
     // start a dumbpipe listen-tcp process
-    let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", "localhost:3000"])
+    let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", "localhost:3002"])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_to_stdout() //
         .reader()

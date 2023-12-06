@@ -2,7 +2,7 @@
 name = "dumbpipe"
 version = "0.2.1"
 edition = "2021"
-authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>"]
+authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "n0 team"]
 keywords = ["netcat", "cli", "network", "p2p", "holepunching"]
 categories = ["network-programming"]
 license = "Apache-2.0/MIT"
