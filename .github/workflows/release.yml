@@ -55,7 +55,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        name: [ubuntu-latest, ubuntu-arm-latest, macOS-arm-latest, windows-latest]
+        name: [ubuntu-latest, ubuntu-arm-latest, macOS-latest, macOS-arm-latest, windows-latest]
         rust: [stable]
         include:
           - name: ubuntu-arm-latest
