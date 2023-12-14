@@ -777,6 +777,7 @@ dependencies = [
  "clap",
  "data-encoding",
  "duct",
+ "hex",
  "iroh-net",
  "nix 0.27.1",
  "postcard",

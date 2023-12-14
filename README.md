@@ -76,3 +76,20 @@ connect-tcp --addr 0.0.0.0:3001 <ticket>
 ### Testing it
 
 You can now browse the website on port 3001.
+
+# Advanced features
+
+## Custom ALPNs
+
+Dumbpipe has an expert feature to specify a custom [ALPN](https://en.wikipedia.org/wiki/Application-Layer_Protocol_Negotiation) string. You can use it to interact with
+existing iroh-net services.
+
+E.g. here is how to interact with the iroh-bytes
+protocol:
+
+```
+echo request1.bin | dumbpipe connect <ticket> --custom-alpn utf8:/iroh-bytes/2 > response1.bin 
+```
+
+if request1.bin contained a valid request for the `/iroh-bytes/2` protocol, response1.bin will
+now contain the response.

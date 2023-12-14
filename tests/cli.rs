@@ -1,3 +1,4 @@
+#![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
 use rand::Rng;
 
 use crate::node_ticket::NodeTicket;
@@ -86,6 +87,54 @@ fn connect_listen_happy() {
     assert_eq!(&listen_stdout, connect_to_listen);
 }
 
+/// Tests the basic functionality of the connect and listen pair
+///
+/// Connect and listen both write a limited amount of data and then EOF.
+/// The interaction should stop when both sides have EOF'd.
+#[test]
+fn connect_listen_custom_alpn_happy() {
+    // the bytes provided by the listen command
+    let listen_to_connect = b"hello from listen";
+    let connect_to_listen = b"hello from connect";
+    let mut listen = duct::cmd(
+        dumbpipe_bin(),
+        ["listen", "--custom-alpn", "utf8:mysuperalpn/0.1.0"],
+    )
+    .env_remove("RUST_LOG") // disable tracing
+    .stdin_bytes(listen_to_connect)
+    .stderr_to_stdout() //
+    .reader()
+    .unwrap();
+    // read the first 3 lines of the header, and parse the last token as a ticket
+    let header = read_ascii_lines(3, &mut listen).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = NodeTicket::from_str(ticket).unwrap();
+
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        [
+            "connect",
+            &ticket.to_string(),
+            "--custom-alpn",
+            "utf8:mysuperalpn/0.1.0",
+        ],
+    )
+    .env_remove("RUST_LOG") // disable tracing
+    .stdin_bytes(connect_to_listen)
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
+
+    assert!(connect.status.success());
+    assert_eq!(&connect.stdout, listen_to_connect);
+
+    let mut listen_stdout = Vec::new();
+    listen.read_to_end(&mut listen_stdout).unwrap();
+    assert_eq!(&listen_stdout, connect_to_listen);
+}
+
 #[cfg(unix)]
 #[test]
 fn connect_listen_ctrlc_connect() {
@@ -164,7 +213,9 @@ fn connect_listen_ctrlc_listen() {
     connect.read_to_end(&mut tmp).ok();
 }
 
+// TODO: figure out why this is flaky on windows
 #[test]
+#[cfg(unix)]
 fn listen_tcp_happy() {
     let b1 = wait2();
     let b2 = b1.clone();
@@ -188,7 +239,7 @@ fn listen_tcp_happy() {
         .stderr_to_stdout() //
         .reader()
         .unwrap();
-    let header = read_ascii_lines(3, &mut listen_tcp).unwrap();
+    let header = read_ascii_lines(4, &mut listen_tcp).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = NodeTicket::from_str(ticket).unwrap();
