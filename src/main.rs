@@ -84,15 +84,16 @@ pub struct CommonArgs {
     ///
     /// Alpns are byte strings. To specify an utf8 string, prefix it with `utf8:`.
     /// Otherwise, it will be parsed as a hex string.
+    #[clap(long)]
     pub custom_alpn: Option<String>,
 }
 
 impl CommonArgs {
-    fn alpns(&self) -> anyhow::Result<Vec<Vec<u8>>> {
-        Ok(vec![match &self.custom_alpn {
+    fn alpn(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(match &self.custom_alpn {
             Some(alpn) => parse_alpn(alpn)?,
             None => dumbpipe::ALPN.to_vec(),
-        }])
+        })
     }
 
     fn is_custom_alpn(&self) -> bool {
@@ -251,7 +252,7 @@ async fn forward_bidi(
 async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = MagicEndpoint::builder()
-        .alpns(args.common.alpns()?)
+        .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
         .bind(args.common.magic_port)
         .await?;
@@ -313,7 +314,7 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let addr = args.ticket.addr;
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
-    let connection = endpoint.connect(addr, dumbpipe::ALPN).await?;
+    let connection = endpoint.connect(addr, &args.common.alpn()?).await?;
     tracing::info!("connected to {}", remote_node_id);
     // open a bidi stream, try only once
     let (mut s, r) = connection.open_bi().await?;
@@ -357,13 +358,14 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         addr: NodeAddr,
         endpoint: MagicEndpoint,
         handshake: bool,
+        alpn: &[u8],
     ) -> anyhow::Result<()> {
         let (tcp_stream, tcp_addr) = next.context("error accepting tcp connection")?;
         let (tcp_recv, tcp_send) = tcp_stream.into_split();
         tracing::info!("got tcp connection from {}", tcp_addr);
         let remote_node_id = addr.node_id;
         let connection = endpoint
-            .connect(addr, dumbpipe::ALPN)
+            .connect(addr, alpn)
             .await
             .context(format!("error connecting to {}", remote_node_id))?;
         let (mut magic_send, magic_recv) = connection
@@ -393,8 +395,9 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         let endpoint = endpoint.clone();
         let addr = addr.clone();
         let handshake = !args.common.is_custom_alpn();
+        let alpn = args.common.alpn()?;
         tokio::spawn(async move {
-            if let Err(cause) = handle_tcp_accept(next, addr, endpoint, handshake).await {
+            if let Err(cause) = handle_tcp_accept(next, addr, endpoint, handshake, &alpn).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -413,7 +416,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     };
     let secret_key = get_or_create_secret()?;
     let endpoint = MagicEndpoint::builder()
-        .alpns(args.common.alpns()?)
+        .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
         .bind(args.common.magic_port)
         .await?;
