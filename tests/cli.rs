@@ -188,7 +188,7 @@ fn listen_tcp_happy() {
         .stderr_to_stdout() //
         .reader()
         .unwrap();
-    let header = read_ascii_lines(3, &mut listen_tcp).unwrap();
+    let header = read_ascii_lines(4, &mut listen_tcp).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = NodeTicket::from_str(ticket).unwrap();
