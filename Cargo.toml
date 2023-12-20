@@ -9,13 +9,12 @@ license = "Apache-2.0/MIT"
 repository = "https://github.com/n0-computer/dumb-pipe"
 description = "A cli tool to pipe data over the network, with NAT hole punching"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.75"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
-iroh-net = { git = "https://github.com/n0-computer/iroh", branch = "main" }
+iroh-net = "0.12"
 quinn = "0.10.2"
 tokio = { version = "1.34.0", features = ["full"] }
 tokio-util = "0.7.10"
