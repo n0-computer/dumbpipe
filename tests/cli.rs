@@ -1,7 +1,7 @@
 #![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
+use dumbpipe::NodeTicket;
 use rand::Rng;
 
-use crate::node_ticket::NodeTicket;
 use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
@@ -9,8 +9,6 @@ use std::{
     sync::{Arc, Barrier},
     time::Duration,
 };
-#[path = "../src/node_ticket.rs"]
-mod node_ticket;
 
 // binary path
 fn dumbpipe_bin() -> &'static str {

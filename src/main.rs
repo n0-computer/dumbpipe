@@ -1,6 +1,7 @@
 //! Command line arguments.
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use dumbpipe::NodeTicket;
 use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint, NodeAddr};
 use std::{
     io,
@@ -12,8 +13,6 @@ use tokio::{
     select,
 };
 use tokio_util::sync::CancellationToken;
-mod node_ticket;
-use node_ticket::NodeTicket;
 
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
@@ -260,8 +259,8 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     while endpoint.my_derp().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let addr = endpoint.my_addr().await?;
-    let ticket = NodeTicket { addr };
+    let node = endpoint.my_addr().await?;
+    let ticket = NodeTicket::new(node)?;
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
     // note that the tests rely on the ticket being the last thing printed
@@ -311,10 +310,10 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
         .alpns(vec![])
         .bind(args.common.magic_port)
         .await?;
-    let addr = args.ticket.addr;
+    let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
-    let connection = endpoint.connect(addr, &args.common.alpn()?).await?;
+    let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await?;
     tracing::info!("connected to {}", remote_node_id);
     // open a bidi stream, try only once
     let (mut s, r) = connection.open_bi().await?;
@@ -382,7 +381,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         forward_bidi(tcp_recv, tcp_send, magic_recv, magic_send).await?;
         anyhow::Ok(())
     }
-    let addr = args.ticket.addr;
+    let addr = args.ticket.node_addr();
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
         let next = tokio::select! {
@@ -424,20 +423,17 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     while endpoint.my_derp().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let addr = endpoint.my_addr().await?;
-    let ticket = NodeTicket { addr };
-    let mut short_ticket = ticket.clone();
-    short_ticket.addr.info.direct_addresses.clear();
+    let node_addr = endpoint.my_addr().await?;
+    let ticket = NodeTicket::new(node_addr)?;
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
     // note that the tests rely on the ticket being the last thing printed
     eprintln!("Forwarding incoming requests to '{}'.", args.host);
     eprintln!("To connect, use e.g.:");
-    eprintln!("dumbpipe connect {short_ticket}");
     eprintln!("dumbpipe connect {ticket}");
-    tracing::info!("node id is {}", ticket.addr.node_id);
-    tracing::info!("derp region is {:?}", ticket.addr.info.derp_region);
+    tracing::info!("node id is {}", ticket.node_addr().node_id);
+    tracing::info!("derp url is {:?}", ticket.node_addr().info.derp_url);
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(

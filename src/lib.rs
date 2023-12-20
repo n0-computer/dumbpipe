@@ -1,5 +1,3 @@
-mod node_ticket;
-
 /// The ALPN for dumbpipe.
 ///
 /// It is basically just passing data through 1:1, except that the connecting
@@ -12,4 +10,4 @@ pub const ALPN: &[u8] = b"DUMBPIPEV0";
 /// calls accept_bi() must consume it.
 pub const HANDSHAKE: [u8; 5] = *b"hello";
 
-pub use node_ticket::NodeTicket;
+pub use iroh_net::ticket::NodeTicket;
