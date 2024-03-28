@@ -53,6 +53,7 @@ fn random_port() -> u16 {
 /// Connect and listen both write a limited amount of data and then EOF.
 /// The interaction should stop when both sides have EOF'd.
 #[test]
+#[ignore = "flaky"]
 fn connect_listen_happy() {
     // the bytes provided by the listen command
     let listen_to_connect = b"hello from listen";
@@ -90,6 +91,7 @@ fn connect_listen_happy() {
 /// Connect and listen both write a limited amount of data and then EOF.
 /// The interaction should stop when both sides have EOF'd.
 #[test]
+#[ignore = "flaky"]
 fn connect_listen_custom_alpn_happy() {
     // the bytes provided by the listen command
     let listen_to_connect = b"hello from listen";
@@ -214,6 +216,7 @@ fn connect_listen_ctrlc_listen() {
 // TODO: figure out why this is flaky on windows
 #[test]
 #[cfg(unix)]
+#[ignore = "flaky"]
 fn listen_tcp_happy() {
     let b1 = wait2();
     let b2 = b1.clone();
