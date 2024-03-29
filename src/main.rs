@@ -85,6 +85,10 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
+
+    /// The verbosity level. Repeat to increase verbosity.
+    #[clap(short = 'v', long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
 }
 
 impl CommonArgs {
@@ -256,15 +260,22 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
         .bind(args.common.magic_port)
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
-    while endpoint.my_derp().is_none() {
+    while endpoint.my_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let node = endpoint.my_addr().await?;
+    let mut short = node.clone();
     let ticket = NodeTicket::new(node)?;
+    short.info.direct_addresses.clear();
+    let short = NodeTicket::new(short)?;
+
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
     // note that the tests rely on the ticket being the last thing printed
     eprintln!("Listening. To connect, use:\ndumbpipe connect {}", ticket);
+    if args.common.verbose > 0 {
+        eprintln!("or:\ndumbpipe connect {}", short);
+    }
 
     loop {
         let Some(connecting) = endpoint.accept().await else {
@@ -420,11 +431,14 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         .bind(args.common.magic_port)
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
-    while endpoint.my_derp().is_none() {
+    while endpoint.my_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let node_addr = endpoint.my_addr().await?;
+    let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr)?;
+    short.info.direct_addresses.clear();
+    let short = NodeTicket::new(short)?;
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -432,8 +446,11 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     eprintln!("Forwarding incoming requests to '{}'.", args.host);
     eprintln!("To connect, use e.g.:");
     eprintln!("dumbpipe connect {ticket}");
+    if args.common.verbose > 0 {
+        eprintln!("or:\ndumbpipe connect {}", short);
+    }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
-    tracing::info!("derp url is {:?}", ticket.node_addr().info.derp_url);
+    tracing::info!("derp url is {:?}", ticket.node_addr().info.relay_url);
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(
