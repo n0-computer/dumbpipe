@@ -2,7 +2,12 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint, NodeAddr};
+use iroh_net::{
+    discovery::{dns::DnsDiscovery, pkarr_publish::PkarrPublisher, ConcurrentDiscovery, Discovery},
+    key::SecretKey,
+    magic_endpoint::get_remote_node_id,
+    MagicEndpoint, NodeAddr,
+};
 use std::{
     io,
     net::{SocketAddr, ToSocketAddrs},
@@ -254,7 +259,9 @@ async fn forward_bidi(
 
 async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
+    let discovery = n0_discovery(secret_key.clone());
     let endpoint = MagicEndpoint::builder()
+        .discovery(discovery)
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
         .bind(args.common.magic_port)
@@ -316,8 +323,10 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
 
 async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
+    let discovery = Box::new(DnsDiscovery::n0_dns());
     let endpoint = MagicEndpoint::builder()
         .secret_key(secret_key)
+        .discovery(discovery)
         .alpns(vec![])
         .bind(args.common.magic_port)
         .await?;
@@ -349,9 +358,11 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret()?;
+    let discovery = Box::new(DnsDiscovery::n0_dns());
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![])
         .secret_key(secret_key)
+        .discovery(discovery)
         .bind(args.common.magic_port)
         .await
         .context("unable to bind magicsock")?;
@@ -425,8 +436,10 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
+    let discovery = n0_discovery(secret_key.clone());
     let endpoint = MagicEndpoint::builder()
         .alpns(vec![args.common.alpn()?])
+        .discovery(discovery)
         .secret_key(secret_key)
         .bind(args.common.magic_port)
         .await?;
@@ -503,6 +516,14 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+/// Create a discovery service that resolves and publishes via iroh DNS.
+pub fn n0_discovery(secret_key: SecretKey) -> Box<dyn Discovery> {
+    Box::new(ConcurrentDiscovery::from_services(vec![
+        Box::new(DnsDiscovery::n0_dns()),
+        Box::new(PkarrPublisher::n0_dns(secret_key)),
+    ]))
 }
 
 #[tokio::main]
