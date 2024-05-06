@@ -445,9 +445,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     // note that the tests rely on the ticket being the last thing printed
     eprintln!("Forwarding incoming requests to '{}'.", args.host);
     eprintln!("To connect, use e.g.:");
-    eprintln!("dumbpipe connect {ticket}");
+    eprintln!("dumbpipe connect-tcp {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect {}", short);
+        eprintln!("or:\ndumbpipe connect-tcp {}", short);
     }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
     tracing::info!("derp url is {:?}", ticket.node_addr().info.relay_url);
