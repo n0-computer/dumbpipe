@@ -2,7 +2,11 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh_net::{key::SecretKey, magic_endpoint::get_remote_node_id, MagicEndpoint, NodeAddr};
+use iroh_net::{
+    key::SecretKey,
+    magic_endpoint::{get_remote_node_id, Connecting},
+    MagicEndpoint, NodeAddr,
+};
 use std::{
     io,
     net::{SocketAddr, ToSocketAddrs},
@@ -454,7 +458,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(
-        connecting: quinn::Connecting,
+        connecting: Connecting,
         addrs: Vec<std::net::SocketAddr>,
         handshake: bool,
     ) -> anyhow::Result<()> {
