@@ -3,9 +3,9 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
 use iroh_net::{
+    endpoint::{get_remote_node_id, Connecting},
     key::SecretKey,
-    magic_endpoint::{get_remote_node_id, Connecting},
-    MagicEndpoint, NodeAddr,
+    Endpoint, NodeAddr,
 };
 use std::{
     io,
@@ -258,7 +258,7 @@ async fn forward_bidi(
 
 async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = MagicEndpoint::builder()
+    let endpoint = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
         .bind(args.common.magic_port)
@@ -320,7 +320,7 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
 
 async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = MagicEndpoint::builder()
+    let endpoint = Endpoint::builder()
         .secret_key(secret_key)
         .alpns(vec![])
         .bind(args.common.magic_port)
@@ -353,7 +353,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret()?;
-    let endpoint = MagicEndpoint::builder()
+    let endpoint = Endpoint::builder()
         .alpns(vec![])
         .secret_key(secret_key)
         .bind(args.common.magic_port)
@@ -370,7 +370,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
     async fn handle_tcp_accept(
         next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
         addr: NodeAddr,
-        endpoint: MagicEndpoint,
+        endpoint: Endpoint,
         handshake: bool,
         alpn: &[u8],
     ) -> anyhow::Result<()> {
@@ -429,7 +429,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
-    let endpoint = MagicEndpoint::builder()
+    let endpoint = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
         .bind(args.common.magic_port)
