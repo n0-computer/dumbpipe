@@ -264,10 +264,10 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
         .bind(args.common.magic_port)
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
-    while endpoint.my_relay().is_none() {
+    while endpoint.home_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let node = endpoint.my_addr().await?;
+    let node = endpoint.node_addr().await?;
     let mut short = node.clone();
     let ticket = NodeTicket::new(node)?;
     short.info.direct_addresses.clear();
@@ -435,10 +435,10 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         .bind(args.common.magic_port)
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
-    while endpoint.my_relay().is_none() {
+    while endpoint.home_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let node_addr = endpoint.my_addr().await?;
+    let node_addr = endpoint.node_addr().await?;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr)?;
     short.info.direct_addresses.clear();
