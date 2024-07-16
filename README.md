@@ -70,7 +70,7 @@ This command will output a ticket that can be used to connect.
 Forwards all incoming connections to the magic endpoint given in the ticket.
 
 ```
-connect-tcp --addr 0.0.0.0:3001 <ticket>
+dumbpipe connect-tcp --addr 0.0.0.0:3001 <ticket>
 ```
 
 ### Testing it
