@@ -1593,8 +1593,9 @@ checksum = "8f518f335dce6725a761382244631d86cf0ccb2863413590b31338feb467f9c3"
 
 [[package]]
 name = "iroh-base"
-version = "0.23.0"
-source = "git+https://github.com/n0-computer/iroh?branch=main#23475650e63178efd677e357737fa3972ef16ab9"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "961bc5e09fec3eb0bf329670fc50d2daa8d73081842b647bb3a88096ec1b055c"
 dependencies = [
  "aead",
  "anyhow",
@@ -1633,8 +1634,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-metrics"
-version = "0.23.0"
-source = "git+https://github.com/n0-computer/iroh?branch=main#23475650e63178efd677e357737fa3972ef16ab9"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "508015311e5982ab48133fc3ce9848a5c6beadc4ceaa99504299ba3da366a398"
 dependencies = [
  "anyhow",
  "erased_set",
@@ -1653,8 +1655,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-net"
-version = "0.23.0"
-source = "git+https://github.com/n0-computer/iroh?branch=main#23475650e63178efd677e357737fa3972ef16ab9"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19cf421dc1f3069a27e7463f72bddd51353ec531f9294a649baebb6d4fb259eb"
 dependencies = [
  "anyhow",
  "backoff",
@@ -4230,7 +4233,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
