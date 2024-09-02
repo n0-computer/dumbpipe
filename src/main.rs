@@ -170,7 +170,7 @@ async fn copy_to_quinn(
     tokio::select! {
         res = tokio::io::copy(&mut from, &mut send) => {
             let size = res?;
-            send.finish().await?;
+            send.finish()?;
             Ok(size)
         }
         _ = token.cancelled() => {
@@ -485,14 +485,17 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     }
 
     loop {
-        let connecting = select! {
-            connecting = endpoint.accept() => connecting,
+        let incoming = select! {
+            incoming = endpoint.accept() => incoming,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("got ctrl-c, exiting");
                 break;
             }
         };
-        let Some(connecting) = connecting else {
+        let Some(incoming) = incoming else {
+            break;
+        };
+        let Ok(connecting) = incoming.accept() else {
             break;
         };
         let addrs = addrs.clone();
