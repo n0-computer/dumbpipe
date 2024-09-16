@@ -9,7 +9,7 @@ use iroh_net::{
 };
 use std::{
     io,
-    net::{SocketAddr, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
 };
 use tokio::{
@@ -261,7 +261,17 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let endpoint = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
-        .bind(args.common.magic_port)
+        .bind_addr_v4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            args.common.magic_port,
+        ))
+        .bind_addr_v6(SocketAddrV6::new(
+            Ipv6Addr::UNSPECIFIED,
+            args.common.magic_port + 1,
+            0,
+            0,
+        ))
+        .bind()
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
     while endpoint.home_relay().is_none() {
@@ -323,7 +333,17 @@ async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let endpoint = Endpoint::builder()
         .secret_key(secret_key)
         .alpns(vec![])
-        .bind(args.common.magic_port)
+        .bind_addr_v4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            args.common.magic_port,
+        ))
+        .bind_addr_v6(SocketAddrV6::new(
+            Ipv6Addr::UNSPECIFIED,
+            args.common.magic_port + 1,
+            0,
+            0,
+        ))
+        .bind()
         .await?;
     let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
@@ -356,7 +376,17 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
     let endpoint = Endpoint::builder()
         .alpns(vec![])
         .secret_key(secret_key)
-        .bind(args.common.magic_port)
+        .bind_addr_v4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            args.common.magic_port,
+        ))
+        .bind_addr_v6(SocketAddrV6::new(
+            Ipv6Addr::UNSPECIFIED,
+            args.common.magic_port + 1,
+            0,
+            0,
+        ))
+        .bind()
         .await
         .context("unable to bind magicsock")?;
     tracing::info!("tcp listening on {:?}", addrs);
@@ -432,7 +462,17 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     let endpoint = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key)
-        .bind(args.common.magic_port)
+        .bind_addr_v4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            args.common.magic_port,
+        ))
+        .bind_addr_v6(SocketAddrV6::new(
+            Ipv6Addr::UNSPECIFIED,
+            args.common.magic_port + 1,
+            0,
+            0,
+        ))
+        .bind()
         .await?;
     // wait for the endpoint to figure out its address before making a ticket
     while endpoint.home_relay().is_none() {
