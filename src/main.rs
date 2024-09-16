@@ -335,18 +335,15 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
 
 async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
-    let mut builder = Endpoint::builder()
-        .secret_key(secret_key)
-        .alpns(vec![]);
-   
+    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(vec![]);
+
     if let Some(addr) = args.common.magic_ipv4_addr {
         builder = builder.bind_addr_v4(addr);
     }
     if let Some(addr) = args.common.magic_ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
-    let endpoint = builder.bind()
-        .await?;
+    let endpoint = builder.bind().await?;
     let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
@@ -375,18 +372,14 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret()?;
-    let mut builder = Endpoint::builder()
-        .alpns(vec![])
-        .secret_key(secret_key);
+    let mut builder = Endpoint::builder().alpns(vec![]).secret_key(secret_key);
     if let Some(addr) = args.common.magic_ipv4_addr {
         builder = builder.bind_addr_v4(addr);
     }
     if let Some(addr) = args.common.magic_ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
-        let endpoint = builder.bind()
-        .await
-        .context("unable to bind magicsock")?;
+    let endpoint = builder.bind().await.context("unable to bind magicsock")?;
     tracing::info!("tcp listening on {:?}", addrs);
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -466,8 +459,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     if let Some(addr) = args.common.magic_ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
-    let endpoint = builder.bind()
-        .await?;
+    let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
     while endpoint.home_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
