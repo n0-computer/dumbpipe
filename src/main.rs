@@ -9,7 +9,7 @@ use iroh_net::{
 };
 use std::{
     io,
-    net::{SocketAddr, ToSocketAddrs},
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
 };
 use tokio::{
@@ -72,9 +72,19 @@ pub enum Commands {
 
 #[derive(Parser, Debug)]
 pub struct CommonArgs {
-    /// The port to use for the magicsocket. Random by default.
-    #[clap(long, default_value_t = 0)]
-    pub magic_port: u16,
+    /// The IPv4 address that magicsocket will listen on.
+    ///
+    /// If None, defaults to a random free port, but it can be useful to specify a fixed
+    /// port, e.g. to configure a firewall rule.
+    #[clap(long, default_value = None)]
+    pub magic_ipv4_addr: Option<SocketAddrV4>,
+
+    /// The IPv6 address that magicsocket will listen on.
+    ///
+    /// If None, defaults to a random free port, but it can be useful to specify a fixed
+    /// port, e.g. to configure a firewall rule.
+    #[clap(long, default_value = None)]
+    pub magic_ipv6_addr: Option<SocketAddrV6>,
 
     /// A custom ALPN to use for the magicsocket.
     ///
@@ -258,11 +268,16 @@ async fn forward_bidi(
 
 async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = Endpoint::builder()
+    let mut builder = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
-        .secret_key(secret_key)
-        .bind(args.common.magic_port)
-        .await?;
+        .secret_key(secret_key);
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
     while endpoint.home_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -320,11 +335,15 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
 
 async fn connect_stdio(args: ConnectArgs) -> anyhow::Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = Endpoint::builder()
-        .secret_key(secret_key)
-        .alpns(vec![])
-        .bind(args.common.magic_port)
-        .await?;
+    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(vec![]);
+
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await?;
     let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
@@ -353,12 +372,14 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret()?;
-    let endpoint = Endpoint::builder()
-        .alpns(vec![])
-        .secret_key(secret_key)
-        .bind(args.common.magic_port)
-        .await
-        .context("unable to bind magicsock")?;
+    let mut builder = Endpoint::builder().alpns(vec![]).secret_key(secret_key);
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await.context("unable to bind magicsock")?;
     tracing::info!("tcp listening on {:?}", addrs);
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -429,11 +450,16 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
-    let endpoint = Endpoint::builder()
+    let mut builder = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
-        .secret_key(secret_key)
-        .bind(args.common.magic_port)
-        .await?;
+        .secret_key(secret_key);
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
     while endpoint.home_relay().is_none() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
