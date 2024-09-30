@@ -14,7 +14,7 @@ description = "A cli tool to pipe data over the network, with NAT hole punching"
 anyhow = "1.0.75"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
-iroh-net = "0.25"
+iroh-net = "0.26"
 quinn = { version = "0.11.3", package = "iroh-quinn" }
 tokio = { version = "1.34.0", features = ["full"] }
 tokio-util = "0.7.10"
@@ -25,6 +25,3 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
 rand = "0.8.5"
-
-[patch.crates-io]
-iroh-net = { git = "https://github.com/n0-computer/iroh", branch = "main" }
