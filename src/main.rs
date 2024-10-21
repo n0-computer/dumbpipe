@@ -284,9 +284,9 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     }
     let node = endpoint.node_addr().await?;
     let mut short = node.clone();
-    let ticket = NodeTicket::new(node)?;
+    let ticket = NodeTicket::new(node);
     short.info.direct_addresses.clear();
-    let short = NodeTicket::new(short)?;
+    let short = NodeTicket::new(short);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -466,9 +466,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     }
     let node_addr = endpoint.node_addr().await?;
     let mut short = node_addr.clone();
-    let ticket = NodeTicket::new(node_addr)?;
+    let ticket = NodeTicket::new(node_addr);
     short.info.direct_addresses.clear();
-    let short = NodeTicket::new(short)?;
+    let short = NodeTicket::new(short);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
