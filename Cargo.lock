@@ -4585,8 +4585,3 @@ name = "zeroize"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
-
-[[patch.unused]]
-name = "iroh-net"
-version = "0.26.0"
-source = "git+https://github.com/n0-computer/iroh.git?branch=main#844b1469bab5d5f33b7de56b3d3d979ed73ae3ca"
