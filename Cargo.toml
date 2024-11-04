@@ -5,9 +5,10 @@ edition = "2021"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "n0 team"]
 keywords = ["netcat", "cli", "network", "p2p", "holepunching"]
 categories = ["network-programming"]
-license = "Apache-2.0/MIT"
-repository = "https://github.com/n0-computer/dumb-pipe"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/n0-computer/dumbpipe"
 description = "A cli tool to pipe data over the network, with NAT hole punching"
+readme = "README.md"
 
 
 [dependencies]
@@ -25,6 +26,3 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
 rand = "0.8.5"
-
-[patch.crates-io]
-iroh-net = { git = "https://github.com/n0-computer/iroh.git", branch = "main"}
