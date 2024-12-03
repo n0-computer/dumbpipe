@@ -2,7 +2,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh_net::{
+use iroh::{
     endpoint::{get_remote_node_id, Connecting},
     key::SecretKey,
     Endpoint, NodeAddr,

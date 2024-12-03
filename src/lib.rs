@@ -10,4 +10,4 @@ pub const ALPN: &[u8] = b"DUMBPIPEV0";
 /// calls accept_bi() must consume it.
 pub const HANDSHAKE: [u8; 5] = *b"hello";
 
-pub use iroh_net::ticket::NodeTicket;
+pub use iroh::ticket::NodeTicket;
