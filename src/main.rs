@@ -219,7 +219,7 @@ fn get_or_create_secret() -> anyhow::Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
-            let key = SecretKey::generate(rand::thread_rng());
+            let key = SecretKey::generate(rand::rngs::OsRng);
             eprintln!("using secret key {}", key);
             Ok(key)
         }
