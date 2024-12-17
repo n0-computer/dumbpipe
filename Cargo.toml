@@ -10,13 +10,17 @@ repository = "https://github.com/n0-computer/dumbpipe"
 description = "A cli tool to pipe data over the network, with NAT hole punching"
 readme = "README.md"
 
+# Sadly this also needs to be updated in .github/workflows/ci.yml
+rust-version = "1.81"
 
 [dependencies]
 anyhow = "1.0.75"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
-iroh = { version = "0.29", default-features = false }
+iroh = { version = "0.30", default-features = false }
+iroh-base = { version = "0.30", features = ["ticket"] }
 quinn = { version = "0.12", package = "iroh-quinn" }
+rand = "0.8.5"
 tokio = { version = "1.34.0", features = ["full"] }
 tokio-util = "0.7.10"
 tracing = "0.1.40"
@@ -25,4 +29,3 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 [dev-dependencies]
 duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
-rand = "0.8.5"

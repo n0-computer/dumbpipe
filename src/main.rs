@@ -4,8 +4,7 @@ use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
 use iroh::{
     endpoint::{get_remote_node_id, Connecting},
-    key::SecretKey,
-    Endpoint, NodeAddr,
+    Endpoint, NodeAddr, SecretKey,
 };
 use std::{
     io,
@@ -220,7 +219,7 @@ fn get_or_create_secret() -> anyhow::Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
-            let key = SecretKey::generate();
+            let key = SecretKey::generate(rand::rngs::OsRng);
             eprintln!("using secret key {}", key);
             Ok(key)
         }
@@ -279,13 +278,11 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     }
     let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
-    while endpoint.home_relay().is_none() {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    endpoint.home_relay().initialized().await?;
     let node = endpoint.node_addr().await?;
     let mut short = node.clone();
     let ticket = NodeTicket::new(node);
-    short.info.direct_addresses.clear();
+    short.direct_addresses.clear();
     let short = NodeTicket::new(short);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
@@ -461,13 +458,11 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     }
     let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
-    while endpoint.home_relay().is_none() {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    endpoint.home_relay().initialized().await?;
     let node_addr = endpoint.node_addr().await?;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
-    short.info.direct_addresses.clear();
+    short.direct_addresses.clear();
     let short = NodeTicket::new(short);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
@@ -480,7 +475,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         eprintln!("or:\ndumbpipe connect-tcp {}", short);
     }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
-    tracing::info!("derp url is {:?}", ticket.node_addr().info.relay_url);
+    tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(
