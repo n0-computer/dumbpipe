@@ -29,3 +29,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 [dev-dependencies]
 duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
+
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh.git", branch = "iroh-0-31-0" }
+iroh-base = { git = "https://github.com/n0-computer/iroh.git", branch = "iroh-0-31-0" }
