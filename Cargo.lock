@@ -747,7 +747,6 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
- "iroh-quinn",
  "nix 0.29.0",
  "rand",
  "tokio",

@@ -2,7 +2,10 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
+use iroh::{
+    endpoint::{Connecting, RecvStream, SendStream},
+    Endpoint, NodeAddr, SecretKey,
+};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -169,7 +172,7 @@ pub struct ConnectArgs {
 /// Returns the number of bytes copied in case of success.
 async fn copy_to_quinn(
     mut from: impl AsyncRead + Unpin,
-    mut send: quinn::SendStream,
+    mut send: SendStream,
     token: CancellationToken,
 ) -> io::Result<u64> {
     tracing::trace!("copying to quinn");
@@ -194,7 +197,7 @@ async fn copy_to_quinn(
 ///
 /// Returns the number of bytes copied in case of success.
 async fn copy_from_quinn(
-    mut recv: quinn::RecvStream,
+    mut recv: RecvStream,
     mut to: impl AsyncWrite + Unpin,
     token: CancellationToken,
 ) -> io::Result<u64> {
@@ -236,8 +239,8 @@ fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
 async fn forward_bidi(
     from1: impl AsyncRead + Send + Sync + Unpin + 'static,
     to1: impl AsyncWrite + Send + Sync + Unpin + 'static,
-    from2: quinn::RecvStream,
-    to2: quinn::SendStream,
+    from2: RecvStream,
+    to2: SendStream,
 ) -> anyhow::Result<()> {
     let token1 = CancellationToken::new();
     let token2 = token1.clone();
