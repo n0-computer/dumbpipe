@@ -2,10 +2,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{
-    endpoint::{get_remote_node_id, Connecting},
-    Endpoint, NodeAddr, SecretKey,
-};
+use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -305,7 +302,7 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
                 continue;
             }
         };
-        let remote_node_id = get_remote_node_id(&connection)?;
+        let remote_node_id = &connection.remote_node_id()?;
         tracing::info!("got connection from {}", remote_node_id);
         let (s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
@@ -484,7 +481,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         handshake: bool,
     ) -> anyhow::Result<()> {
         let connection = connecting.await.context("error accepting connection")?;
-        let remote_node_id = get_remote_node_id(&connection)?;
+        let remote_node_id = &connection.remote_node_id()?;
         tracing::info!("got connection from {}", remote_node_id);
         let (s, mut r) = connection
             .accept_bi()
