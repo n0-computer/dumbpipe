@@ -6,16 +6,15 @@ use iroh::{
     endpoint::{get_remote_node_id, Connecting},
     Endpoint, NodeAddr, SecretKey,
 };
+use quinn::Connection;
 use std::{
-    io,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    str::FromStr,
+    collections::HashMap, io, net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs}, str::FromStr, sync::Arc
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    select,
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt}, net::UdpSocket, select
 };
 use tokio_util::sync::CancellationToken;
+mod udpconn;
 
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
@@ -54,6 +53,15 @@ pub enum Commands {
     /// connecting to a TCP socket for which you have to specify the host and port.
     ListenTcp(ListenTcpArgs),
 
+    /// Listen on a magicsocket and forward incoming connections to the specified
+    /// host and port. Every incoming bidi stream is forwarded to a new connection.
+    /// 
+    /// Will print a node ticket on stderr that can be used to connect.
+    /// 
+    /// As far as the magic socket is concerned, this is listening. But it is
+    /// connecting to a UDP socket for which you have to specify the host and port.
+    ListenUdp(ListenUdpArgs),
+
     /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout.
     ///
     /// A node ticket is required to connect.
@@ -67,6 +75,15 @@ pub enum Commands {
     /// As far as the magic socket is concerned, this is connecting. But it is
     /// listening on a TCP socket for which you have to specify the interface and port.
     ConnectTcp(ConnectTcpArgs),
+
+    /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
+    /// to it.
+    /// 
+    /// A node ticket is required to connect.
+    /// 
+    /// As far as the magic socket is concerned, this is connecting. But it is
+    /// listening on a UDP socket for which you have to specify the interface and port.
+    ConnectUdp(ConnectUdpArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -141,8 +158,32 @@ pub struct ListenTcpArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct ListenUdpArgs {
+    #[clap(long)]
+    pub host: String,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
+#[derive(Parser, Debug)]
 pub struct ConnectTcpArgs {
     /// The addresses to listen on for incoming tcp connections.
+    ///
+    /// To listen on all network interfaces, use 0.0.0.0:12345
+    #[clap(long)]
+    pub addr: String,
+
+    /// The node to connect to
+    pub ticket: NodeTicket,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
+#[derive(Parser, Debug)]
+pub struct ConnectUdpArgs {
+    /// The addresses to listen on for incoming udp connections.
     ///
     /// To listen on all network interfaces, use 0.0.0.0:12345
     #[clap(long)]
@@ -440,6 +481,126 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub struct SplitUdpConn {
+    // TODO: Do we need to store this connection?
+    // Holding on to this for the future where we need to cleanup the resources.
+    connection: quinn::Connection,
+    send: quinn::SendStream,
+}
+
+impl SplitUdpConn {
+    pub fn new(connection: quinn::Connection, send: quinn::SendStream) -> Self {
+        Self {
+            connection,
+            send
+        }
+    }
+}
+
+// 1- Receives request message from socket
+// 2- Forwards it to the quinn stream
+// 3- Receives response message back from quinn stream
+// 4- Forwards it back to the socket
+async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
+    let addrs = args
+        .addr
+        .to_socket_addrs()
+        .context(format!("invalid host string {}", args.addr))?;
+    let secret_key = get_or_create_secret()?;
+    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(vec![]);
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await.context("unable to bind magicsock")?;
+    tracing::info!("udp listening on {:?}", addrs);
+    let socket = Arc::new(UdpSocket::bind(addrs.as_slice()).await?);
+
+    let node_addr = args.ticket.node_addr();
+    let mut buf: Vec<u8> = vec![0u8; 65535];
+    let mut conns = HashMap::<SocketAddr, SplitUdpConn>::new();
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((size, sock_addr)) => {
+                // Check if we already have a connection for this socket address
+                let connection = match conns.get_mut(&sock_addr) {
+                    Some(conn) => conn,
+                    None => {
+                        // We need to finish the connection to be done or we should use something like promise because
+                        // when the connection was getting established, it might receive another message.
+                        let endpoint = endpoint.clone();
+                        let addr = node_addr.clone();
+                        let handshake = !args.common.is_custom_alpn();
+                        let alpn = args.common.alpn()?;
+                        
+                        let remote_node_id = addr.node_id;
+                        tracing::info!("forwarding UDP to {}", remote_node_id);
+
+                        // connect to the node, try only once
+                        let connection = endpoint
+                            .connect(addr.clone(), &alpn)
+                            .await
+                            .context(format!("error connecting to {}", remote_node_id))?;
+                        tracing::info!("connected to {}", remote_node_id);
+
+                        // open a bidi stream, try only once
+                        let (mut send, recv) = connection
+                            .open_bi()
+                            .await
+                            .context(format!("error opening bidi stream to {}", remote_node_id))?;
+                        tracing::info!("opened bidi stream to {}", remote_node_id);
+
+                        // send the handshake unless we are using a custom alpn
+                        if handshake {
+                            send.write_all(&dumbpipe::HANDSHAKE).await?;
+                        }
+
+                        let sock_send = socket.clone();
+                        // Spawn a task for listening the quinn connection, and forwarding the data to the UDP socket
+                        tokio::spawn(async move {
+                            // 3- Receives response message back from quinn stream
+                            // 4- Forwards it back to the socket
+                            if let Err(cause) = udpconn::handle_udp_accept(sock_addr, sock_send, recv )
+                            .await {
+                                // log error at warn level
+                                //
+                                // we should know about it, but it's not fatal
+                                tracing::warn!("error handling connection: {}", cause);
+
+                                // TODO: cleanup resources
+                            }
+                        });
+
+                        // Create and store the split connection
+                        let split_conn = SplitUdpConn::new(connection.clone(), send);
+                        conns.insert(sock_addr, split_conn);
+                        conns.get_mut(&sock_addr).expect("connection was just inserted")
+                    }
+                };
+                
+                tracing::info!("forward_udp_to_quinn: Received {} bytes from {}", size, sock_addr);
+
+                // 1- Receives request message from socket
+                // 2- Forwards it to the quinn stream
+                if let Err(e) = connection.send.write_all(&buf[..size]).await {
+                    tracing::error!("Error writing to Quinn stream: {}", e);
+                    // TODO: Cleanup the resources on error.
+                    // Remove the failed connection
+                    // conns.remove(&sock_addr);
+                    return Err(e.into());
+                }
+            }
+            Err(e) => {
+                tracing::warn!("error receiving from UDP socket: {}", e);
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Listen on a magicsocket and forward incoming connections to a tcp socket.
 async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     let addrs = match args.host.to_socket_addrs() {
@@ -533,6 +694,100 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Listen on a magicsocket and forward incoming connections to a udp socket.
+async fn listen_udp(args: ListenUdpArgs) -> anyhow::Result<()> {
+    let addrs = match args.host.to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(e) => anyhow::bail!("invalid host string {}: {}", args.host, e),
+    };
+    let secret_key = get_or_create_secret()?;
+    let mut builder = Endpoint::builder()
+        .alpns(vec![args.common.alpn()?])
+        .secret_key(secret_key);
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await?;
+    // wait for the endpoint to figure out its address before making a ticket
+    endpoint.home_relay().initialized().await?;
+    let node_addr = endpoint.node_addr().await?;
+    let mut short = node_addr.clone();
+    let ticket = NodeTicket::new(node_addr);
+    short.direct_addresses.clear();
+    let short = NodeTicket::new(short);
+
+    // print the ticket on stderr so it doesn't interfere with the data itself
+    //
+    // note that the tests rely on the ticket being the last thing printed
+    eprintln!("Forwarding incoming requests to '{}'.", args.host);
+    eprintln!("To connect, use e.g.:");
+    eprintln!("dumbpipe connect-udp {ticket}");
+    if args.common.verbose > 0 {
+        eprintln!("or:\ndumbpipe connect-udp {}", short);
+    }
+    tracing::info!("node id is {}", ticket.node_addr().node_id);
+    tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
+
+    // handle a new incoming connection on the magic endpoint
+    async fn handle_magic_accept(
+        connecting: Connecting,
+        addrs: Vec<std::net::SocketAddr>,
+        handshake: bool,
+    ) -> anyhow::Result<()> {
+        let connection = connecting.await.context("error accepting connection")?;
+        let remote_node_id = get_remote_node_id(&connection)?;
+        tracing::info!("got connection from {}", remote_node_id);
+        let (s, mut r) = connection
+            .accept_bi()
+            .await
+            .context("error accepting stream")?;
+        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        if handshake {
+            // read the handshake and verify it
+            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
+            r.read_exact(&mut buf).await?;
+            anyhow::ensure!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+        }
+
+        // 1- Receives request message from quinn stream
+        // 2- Forwards it to the (addrs) via UDP socket
+        // 3- Receives response message back from UDP socket
+        // 4- Forwards it back to the quinn stream
+        udpconn::handle_udp_listen(addrs.as_slice(), r, s).await?;
+        Ok(())
+    }
+
+    loop {
+        let incoming = select! {
+            incoming = endpoint.accept() => incoming,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("got ctrl-c, exiting");
+                break;
+            }
+        };
+        let Some(incoming) = incoming else {
+            break;
+        };
+        let Ok(connecting) = incoming.accept() else {
+            break;
+        };
+        let addrs = addrs.clone();
+        let handshake = !args.common.is_custom_alpn();
+        tokio::spawn(async move {
+            if let Err(cause) = handle_magic_accept(connecting, addrs, handshake).await {
+                // log error at warn level
+                //
+                // we should know about it, but it's not fatal
+                tracing::warn!("error handling connection: {}", cause);
+            }
+        });
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -540,8 +795,10 @@ async fn main() -> anyhow::Result<()> {
     let res = match args.command {
         Commands::Listen(args) => listen_stdio(args).await,
         Commands::ListenTcp(args) => listen_tcp(args).await,
+        Commands::ListenUdp(args) => listen_udp(args).await,
         Commands::Connect(args) => connect_stdio(args).await,
         Commands::ConnectTcp(args) => connect_tcp(args).await,
+        Commands::ConnectUdp(args) => connect_udp(args).await,
     };
     match res {
         Ok(()) => std::process::exit(0),
