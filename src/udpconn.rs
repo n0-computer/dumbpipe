@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
+use bytes::Bytes;
 use tokio::net::UdpSocket;
-use quinn::{RecvStream, SendStream};
+use quinn::Connection;
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
@@ -9,48 +10,39 @@ use std::sync::Arc;
 pub(crate) async fn handle_udp_accept(
     client_addr: SocketAddr,
     udp_socket: Arc<UdpSocket>,
-    mut recv_stream: RecvStream,
+    connection: Connection,
 ) -> Result<()> {
     // Create a cancellation token to coordinate shutdown
     let token = CancellationToken::new();
-    let token_quinn = token.clone();
+    let token_conn = token.clone();
     let token_ctrl_c = token.clone();
 
     // Create buffer for receiving data
-    let udp_buf_size = 65535; // Maximum UDP packet size
-    let quinn_to_udp = {
+    let connection_to_udp = {
         let socket = udp_socket.clone();
         tokio::spawn(async move {
-            let mut buf = vec![0u8; udp_buf_size];
             loop {
                 // Check if we should stop
-                if token_quinn.is_cancelled() {
+                if token_conn.is_cancelled() {
                     break;
                 }
 
-                // Read from Quinn stream
-                match recv_stream.read(&mut buf).await {
-                    Ok(Some(n)) => {
-                        // Parse the prefixed message to get the address and the buff
-                        // let (addr, buf) = read_prefixed_message(&buf[..n]).unwrap();
-                        tracing::info!("forward_udp_to_quinn: Received {} bytes from quinn stream.", n);
-                        
+                // Read from connection datagram
+                match connection.read_datagram().await {
+                    Ok(bytes) => {
+                        let n = bytes.len(); // TODO: remove this line
+                        tracing::info!("read datagram from connection with {} bytes. Forwarding to {}", n, client_addr);
+
                         // Forward to UDP peer
-                        tracing::info!("Parsed packet from quinn stream. Forwarding to {}", client_addr);
-                        if let Err(e) = socket.send_to(&buf[..n], client_addr).await {
+                        if let Err(e) = socket.send_to(&bytes, client_addr).await {
                             eprintln!("Error sending to UDP: {}", e);
-                            token_quinn.cancel();
+                            token_conn.cancel();
                             break;
                         }
                     }
-                    Ok(None) => {
-                        // Quinn stream ended normally
-                        token_quinn.cancel();
-                        break;
-                    }
                     Err(e) => {
-                        eprintln!("Quinn receive error: {}", e);
-                        token_quinn.cancel();
+                        eprintln!("Connection read_datagram error: {}", e);
+                        token_conn.cancel();
                         break;
                     }
                 }
@@ -67,8 +59,7 @@ pub(crate) async fn handle_udp_accept(
 
     // Wait for any task to complete (or Ctrl+C)
     tokio::select! {
-        // _ = udp_to_quinn => {},
-        _ = quinn_to_udp => {},
+        _ = connection_to_udp => {},
         _ = ctrl_c => {},
     }
 
@@ -78,13 +69,12 @@ pub(crate) async fn handle_udp_accept(
 // Every new connection is a new socket to the `connect udp` command
 pub(crate) async fn handle_udp_listen(
     peer_addrs: &[SocketAddr],
-    mut recv_stream: RecvStream,
-    mut send_stream: SendStream,
+    connection: Connection,
 ) -> Result<()> {
     // Create a cancellation token to coordinate shutdown
     let token = CancellationToken::new();
     let token_udp = token.clone();
-    let token_quinn = token.clone();
+    let token_conn = token.clone();
     let token_ctrl_c = token.clone();
 
     // Create a new socket for this connection, representing the client connected to UDP server at the other side.
@@ -92,52 +82,48 @@ pub(crate) async fn handle_udp_listen(
     let socket = Arc::new(UdpSocket::bind("0.0.0:0").await?);
 
     let udp_buf_size = 65535; // Maximum UDP packet size
-    let quinn_to_udp = {
+    let conn_to_udp = {
         let socket_send = socket.clone();
         let p_addr = peer_addrs.to_vec();
+        let conn_clone = connection.clone();
         tokio::spawn(async move {
-            let mut buf = vec![0u8; udp_buf_size];
             loop {
                 // Check if we should stop
-                if token_quinn.is_cancelled() {
+                if token_conn.is_cancelled() {
                     tracing::info!("Token cancellation was requested. Ending QUIC to UDP task.");
                     break;
                 }
 
-                // Read from Quinn stream
-                match recv_stream.read(&mut buf).await {
-                    Ok(Some(n)) => {
-                        tracing::info!("forward_quinn_to_udp: Received {} bytes from quinn stream.", n);
+                // Read from connection datagram
+                match conn_clone.read_datagram().await {
+                    Ok(bytes) => {
+                        let n = bytes.len(); // TODO: remove this line
+                        tracing::info!("conn_to_udp: Received {} bytes from datagram stream.", n);
 
                         // Forward to UDP peer
-                        // tracing::info!("Forwarding packets to {:?}", peer_addrs);
                         for addr in p_addr.iter() {
-                            if let Err(e) = socket_send.send_to(&buf[..n], addr).await {
+                            if let Err(e) = socket_send.send_to(&bytes, addr).await {
                                 eprintln!("Error sending to UDP: {}", e);
-                                token_quinn.cancel();
+                                token_conn.cancel();
                                 break;
                             }
                         }
                     }
-                    Ok(None) => {
-                        // Quinn stream ended normally
-                        token_quinn.cancel();
-                        break;
-                    }
                     Err(e) => {
-                        eprintln!("Quinn receive error: {}", e);
-                        token_quinn.cancel();
+                        eprintln!("Connection read_datagram error: {}", e);
+                        token_conn.cancel();
                         break;
                     }
                 }
             }
-            tracing::info!("Token cancellation was requested or error received. quinn connection task ended.");
+            tracing::info!("Token cancellation was requested or error received. connection datagram task ended.");
         })
     };
     
-    let udp_to_quinn = {
+    let udp_to_conn = {
         // Task for listening to the response to the UDP server
         let socket_listen = socket.clone();
+        let conn_clone = connection.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; udp_buf_size];
             loop {
@@ -153,11 +139,11 @@ pub(crate) async fn handle_udp_listen(
                     socket_listen.recv_from(&mut buf)
                 ).await {
                     Ok(Ok((n, _addr))) => {
-                        tracing::info!("forward_quinn_to_udp: Received {} bytes from server", n);
+                        tracing::info!("udp_to_conn: Received {} bytes from server", n);
 
-                        // Forward the buf back to the quinn stream
-                        if let Err(e) = send_stream.write_all(&buf[..n]).await {
-                            eprintln!("Error writing to Quinn stream: {}", e);
+                        // Forward the buf back to the connection datagram
+                        if let Err(e) = conn_clone.send_datagram(Bytes::copy_from_slice(&buf[..n])) {
+                            eprintln!("Error on connection send_datagram: {}", e);
                             token_udp.cancel();
                             break;
                         }
@@ -183,8 +169,8 @@ pub(crate) async fn handle_udp_listen(
 
     // Wait for any task to complete (or Ctrl+C)
     tokio::select! {
-        _ = quinn_to_udp => {},
-        _ = udp_to_quinn => {},
+        _ = conn_to_udp => {},
+        _ = udp_to_conn => {},
         _ = ctrl_c => {},
     }
 

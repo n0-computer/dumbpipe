@@ -1,5 +1,6 @@
 //! Command line arguments.
 use anyhow::Context;
+use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
 use iroh::{
@@ -481,22 +482,6 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub struct SplitUdpConn {
-    // TODO: Do we need to store this connection?
-    // Holding on to this for the future where we need to cleanup the resources.
-    connection: quinn::Connection,
-    send: quinn::SendStream,
-}
-
-impl SplitUdpConn {
-    pub fn new(connection: quinn::Connection, send: quinn::SendStream) -> Self {
-        Self {
-            connection,
-            send
-        }
-    }
-}
-
 // 1- Receives request message from socket
 // 2- Forwards it to the quinn stream
 // 3- Receives response message back from quinn stream
@@ -520,7 +505,7 @@ async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
 
     let node_addr = args.ticket.node_addr();
     let mut buf: Vec<u8> = vec![0u8; 65535];
-    let mut conns = HashMap::<SocketAddr, SplitUdpConn>::new();
+    let mut conns = HashMap::<SocketAddr, Connection>::new();
     loop {
         match socket.recv_from(&mut buf).await {
             Ok((size, sock_addr)) => {
@@ -545,25 +530,18 @@ async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
                             .context(format!("error connecting to {}", remote_node_id))?;
                         tracing::info!("connected to {}", remote_node_id);
 
-                        // open a bidi stream, try only once
-                        let (mut send, recv) = connection
-                            .open_bi()
-                            .await
-                            .context(format!("error opening bidi stream to {}", remote_node_id))?;
-                        tracing::info!("opened bidi stream to {}", remote_node_id);
-
                         // send the handshake unless we are using a custom alpn
                         if handshake {
-                            send.write_all(&dumbpipe::HANDSHAKE).await?;
+                            connection.send_datagram(Bytes::from_static(&dumbpipe::HANDSHAKE))?;
                         }
 
                         let sock_send = socket.clone();
+                        let conn_clone = connection.clone();
                         // Spawn a task for listening the quinn connection, and forwarding the data to the UDP socket
                         tokio::spawn(async move {
-                            // 3- Receives response message back from quinn stream
+                            // 3- Receives response message back from connection datagram
                             // 4- Forwards it back to the socket
-                            if let Err(cause) = udpconn::handle_udp_accept(sock_addr, sock_send, recv )
-                            .await {
+                            if let Err(cause) = udpconn::handle_udp_accept(sock_addr, sock_send, conn_clone).await {
                                 // log error at warn level
                                 //
                                 // we should know about it, but it's not fatal
@@ -574,18 +552,17 @@ async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
                         });
 
                         // Create and store the split connection
-                        let split_conn = SplitUdpConn::new(connection.clone(), send);
-                        conns.insert(sock_addr, split_conn);
+                        conns.insert(sock_addr, connection);
                         conns.get_mut(&sock_addr).expect("connection was just inserted")
                     }
                 };
                 
-                tracing::info!("forward_udp_to_quinn: Received {} bytes from {}", size, sock_addr);
+                tracing::info!("connect_udp: Received {} bytes from {}", size, sock_addr);
 
                 // 1- Receives request message from socket
-                // 2- Forwards it to the quinn stream
-                if let Err(e) = connection.send.write_all(&buf[..size]).await {
-                    tracing::error!("Error writing to Quinn stream: {}", e);
+                // 2- Forwards it to the connection datagram
+                if let Err(e) = connection.send_datagram(Bytes::copy_from_slice(&buf[..size])) { // Bytes::copy_from_slice probably isn't the best way to do it. Investigate.
+                    tracing::error!("Error writing to connection datagram: {}", e);
                     // TODO: Cleanup the resources on error.
                     // Remove the failed connection
                     // conns.remove(&sock_addr);
@@ -740,23 +717,17 @@ async fn listen_udp(args: ListenUdpArgs) -> anyhow::Result<()> {
         let connection = connecting.await.context("error accepting connection")?;
         let remote_node_id = get_remote_node_id(&connection)?;
         tracing::info!("got connection from {}", remote_node_id);
-        let (s, mut r) = connection
-            .accept_bi()
-            .await
-            .context("error accepting stream")?;
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
         if handshake {
             // read the handshake and verify it
-            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await?;
-            anyhow::ensure!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            let bytes = connection.read_datagram().await?;
+            anyhow::ensure!(*bytes == dumbpipe::HANDSHAKE, "invalid handshake");
         }
 
         // 1- Receives request message from quinn stream
         // 2- Forwards it to the (addrs) via UDP socket
         // 3- Receives response message back from UDP socket
         // 4- Forwards it back to the quinn stream
-        udpconn::handle_udp_listen(addrs.as_slice(), r, s).await?;
+        udpconn::handle_udp_listen(addrs.as_slice(), connection).await?;
         Ok(())
     }
 
