@@ -12,7 +12,7 @@ use std::{
     collections::HashMap, io, net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs}, str::FromStr, sync::Arc
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt}, net::UdpSocket, select
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt}, net::UdpSocket, select, signal
 };
 use tokio_util::sync::CancellationToken;
 mod udpconn;
@@ -56,9 +56,9 @@ pub enum Commands {
 
     /// Listen on a magicsocket and forward incoming connections to the specified
     /// host and port. Every incoming bidi stream is forwarded to a new connection.
-    /// 
+    ///
     /// Will print a node ticket on stderr that can be used to connect.
-    /// 
+    ///
     /// As far as the magic socket is concerned, this is listening. But it is
     /// connecting to a UDP socket for which you have to specify the host and port.
     ListenUdp(ListenUdpArgs),
@@ -79,9 +79,9 @@ pub enum Commands {
 
     /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
     /// to it.
-    /// 
+    ///
     /// A node ticket is required to connect.
-    /// 
+    ///
     /// As far as the magic socket is concerned, this is connecting. But it is
     /// listening on a UDP socket for which you have to specify the interface and port.
     ConnectUdp(ConnectUdpArgs),
@@ -505,73 +505,95 @@ async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
 
     let node_addr = args.ticket.node_addr();
     let mut buf: Vec<u8> = vec![0u8; 65535];
-    let mut conns = HashMap::<SocketAddr, Connection>::new();
+    let conns = Arc::new(tokio::sync::Mutex::new(
+        HashMap::<SocketAddr, Connection>::new(),
+    ));
     loop {
-        match socket.recv_from(&mut buf).await {
-            Ok((size, sock_addr)) => {
-                // Check if we already have a connection for this socket address
-                let connection = match conns.get_mut(&sock_addr) {
-                    Some(conn) => conn,
-                    None => {
-                        // We need to finish the connection to be done or we should use something like promise because
-                        // when the connection was getting established, it might receive another message.
-                        let endpoint = endpoint.clone();
-                        let addr = node_addr.clone();
-                        let handshake = !args.common.is_custom_alpn();
-                        let alpn = args.common.alpn()?;
-                        
-                        let remote_node_id = addr.node_id;
-                        tracing::info!("forwarding UDP to {}", remote_node_id);
-
-                        // connect to the node, try only once
-                        let connection = endpoint
-                            .connect(addr.clone(), &alpn)
-                            .await
-                            .context(format!("error connecting to {}", remote_node_id))?;
-                        tracing::info!("connected to {}", remote_node_id);
-
-                        // send the handshake unless we are using a custom alpn
-                        if handshake {
-                            connection.send_datagram(Bytes::from_static(&dumbpipe::HANDSHAKE))?;
-                        }
-
-                        let sock_send = socket.clone();
-                        let conn_clone = connection.clone();
-                        // Spawn a task for listening the quinn connection, and forwarding the data to the UDP socket
-                        tokio::spawn(async move {
-                            // 3- Receives response message back from connection datagram
-                            // 4- Forwards it back to the socket
-                            if let Err(cause) = udpconn::handle_udp_accept(sock_addr, sock_send, conn_clone).await {
-                                // log error at warn level
-                                //
-                                // we should know about it, but it's not fatal
-                                tracing::warn!("error handling connection: {}", cause);
-
-                                // TODO: cleanup resources
-                            }
-                        });
-
-                        // Create and store the split connection
-                        conns.insert(sock_addr, connection);
-                        conns.get_mut(&sock_addr).expect("connection was just inserted")
-                    }
-                };
-                
-                tracing::info!("connect_udp: Received {} bytes from {}", size, sock_addr);
-
-                // 1- Receives request message from socket
-                // 2- Forwards it to the connection datagram
-                if let Err(e) = connection.send_datagram(Bytes::copy_from_slice(&buf[..size])) { // Bytes::copy_from_slice probably isn't the best way to do it. Investigate.
-                    tracing::error!("Error writing to connection datagram: {}", e);
-                    // TODO: Cleanup the resources on error.
-                    // Remove the failed connection
-                    // conns.remove(&sock_addr);
-                    return Err(e.into());
-                }
-            }
-            Err(e) => {
-                tracing::warn!("error receiving from UDP socket: {}", e);
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                tracing::info!("Received CTRL-C, shutting down...");
                 break;
+            }
+            result = socket.recv_from(&mut buf) => {
+                match result {
+                    Ok((size, sock_addr)) => {
+                        // Check if we already have a connection for this socket address
+                        let mut cnns = conns.lock().await;
+                        let connection = match cnns.get_mut(&sock_addr) {
+                            Some(conn) => conn,
+                            None => {
+                                // If we don't have a connection, drop the previous lock to create a new one later on
+                                drop(cnns);
+
+                                // Create a new connection since this address is not in the hashmap
+                                let endpoint = endpoint.clone();
+                                let addr = node_addr.clone();
+                                let handshake = !args.common.is_custom_alpn();
+                                let alpn = args.common.alpn()?;
+
+                                let remote_node_id = addr.node_id;
+                                tracing::info!("creating a connection to be forwarding UDP to {}", remote_node_id);
+
+                                // connect to the node, try only once
+                                let connection = endpoint
+                                    .connect(addr.clone(), &alpn)
+                                    .await
+                                    .context(format!("error connecting to {}", remote_node_id))?;
+                                tracing::info!("connected to {}", remote_node_id);
+
+                                // send the handshake unless we are using a custom alpn
+                                if handshake {
+                                    connection.send_datagram(Bytes::from_static(&dumbpipe::HANDSHAKE))?;
+                                }
+
+                                let sock_send = socket.clone();
+                                let conn_clone = connection.clone();
+                                let conns_clone = conns.clone();
+                                // Spawn a task for listening the quinn connection, and forwarding the data to the UDP socket
+                                tokio::spawn(async move {
+                                    tracing::info!("Spawned a accept task for {}", sock_addr);
+                                    // 3- Receives response message back from connection datagram
+                                    // 4- Forwards it back to the socket
+                                    if let Err(cause) = udpconn::handle_udp_accept(sock_addr, sock_send, conn_clone).await {
+                                        // log error at warn level
+                                        //
+                                        // we should know about it, but it's not fatal
+                                        tracing::warn!("error handling connection: {}", cause);
+                                    }
+                                    tracing::info!("Closing UDP connection for {}", sock_addr);
+                                    let mut cn = conns_clone.lock().await;
+                                    cn.remove(&sock_addr);
+                                    tracing::info!("Connection {} removed from hashmap.", sock_addr);
+                                });
+
+                                // Store the connection
+                                let mut cn = conns.lock().await;
+                                cn.insert(sock_addr, connection.clone());
+
+                                tracing::info!("Connection stored for {}, returning.", sock_addr);
+
+                                // return
+                                &mut connection.clone()
+                            }
+                        };
+
+                        tracing::info!("connect_udp: Received {} bytes from {}", size, sock_addr);
+
+                        // 1- Receives request message from socket
+                        // 2- Forwards it to the connection datagram
+                        if let Err(e) = connection.send_datagram(Bytes::copy_from_slice(&buf[..size])) { // Bytes::copy_from_slice probably isn't the best way to do it. Investigate.
+                            tracing::error!("Error writing to connection datagram: {}", e);
+                            // TODO: Cleanup the resources on error.
+                            // Remove the failed connection
+                            // conns.remove(&sock_addr);
+                            return Err(e.into());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("error receiving from UDP socket: {}", e);
+                        break;
+                    }
+                }
             }
         }
     }
