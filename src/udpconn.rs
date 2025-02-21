@@ -1,8 +1,8 @@
-use std::net::SocketAddr;
-use bytes::Bytes;
-use tokio::net::UdpSocket;
-use quinn::Connection;
 use anyhow::Result;
+use bytes::Bytes;
+use quinn::Connection;
+use std::net::SocketAddr;
+use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
 use std::sync::Arc;
@@ -30,18 +30,15 @@ pub(crate) async fn handle_udp_accept(
                 // Read from connection datagram
                 match connection.read_datagram().await {
                     Ok(bytes) => {
-                        let n = bytes.len(); // TODO: remove this line
-                        tracing::info!("read datagram from connection with {} bytes. Forwarding to {}", n, client_addr);
-
                         // Forward to UDP peer
                         if let Err(e) = socket.send_to(&bytes, client_addr).await {
-                            eprintln!("Error sending to UDP: {}", e);
+                            tracing::error!("Error sending to UDP: {}", e);
                             token_conn.cancel();
                             break;
                         }
                     }
                     Err(e) => {
-                        eprintln!("Connection read_datagram error: {}", e);
+                        tracing::error!("Connection read_datagram error: {}", e);
                         token_conn.cancel();
                         break;
                     }
@@ -97,20 +94,17 @@ pub(crate) async fn handle_udp_listen(
                 // Read from connection datagram
                 match conn_clone.read_datagram().await {
                     Ok(bytes) => {
-                        let n = bytes.len(); // TODO: remove this line
-                        tracing::info!("conn_to_udp: Received {} bytes from datagram stream.", n);
-
                         // Forward to UDP peer
                         for addr in p_addr.iter() {
                             if let Err(e) = socket_send.send_to(&bytes, addr).await {
-                                eprintln!("Error sending to UDP: {}", e);
+                                tracing::error!("Error sending to UDP: {}", e);
                                 token_conn.cancel();
                                 break;
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Connection read_datagram error: {}", e);
+                        tracing::error!("Connection read_datagram error: {}", e);
                         token_conn.cancel();
                         break;
                     }
@@ -119,7 +113,7 @@ pub(crate) async fn handle_udp_listen(
             tracing::info!("Token cancellation was requested or error received. connection datagram task ended.");
         })
     };
-    
+
     let udp_to_conn = {
         // Task for listening to the response to the UDP server
         let socket_listen = socket.clone();
@@ -136,20 +130,21 @@ pub(crate) async fn handle_udp_listen(
                 // Use timeout to periodically check cancellation
                 match tokio::time::timeout(
                     tokio::time::Duration::from_millis(100),
-                    socket_listen.recv_from(&mut buf)
-                ).await {
+                    socket_listen.recv_from(&mut buf),
+                )
+                .await
+                {
                     Ok(Ok((n, _addr))) => {
-                        tracing::info!("udp_to_conn: Received {} bytes from server", n);
-
                         // Forward the buf back to the connection datagram
-                        if let Err(e) = conn_clone.send_datagram(Bytes::copy_from_slice(&buf[..n])) {
-                            eprintln!("Error on connection send_datagram: {}", e);
+                        if let Err(e) = conn_clone.send_datagram(Bytes::copy_from_slice(&buf[..n]))
+                        {
+                            tracing::error!("Error on connection send_datagram: {}", e);
                             token_udp.cancel();
                             break;
                         }
                     }
                     Ok(Err(e)) => {
-                        eprintln!("UDP receive error: {}", e);
+                        tracing::error!("UDP receive error: {}", e);
                         token_udp.cancel();
                         break;
                     }

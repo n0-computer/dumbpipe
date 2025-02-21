@@ -483,8 +483,8 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
 }
 
 // 1- Receives request message from socket
-// 2- Forwards it to the quinn stream
-// 3- Receives response message back from quinn stream
+// 2- Forwards it to the connection datagram
+// 3- Receives response message back from connection datagram
 // 4- Forwards it back to the socket
 async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
     let addrs = args
@@ -549,9 +549,8 @@ async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
                                 let sock_send = socket.clone();
                                 let conn_clone = connection.clone();
                                 let conns_clone = conns.clone();
-                                // Spawn a task for listening the quinn connection, and forwarding the data to the UDP socket
+                                // Spawn a task for listening the connection datagram, and forward the data to the UDP socket
                                 tokio::spawn(async move {
-                                    tracing::info!("Spawned a accept task for {}", sock_addr);
                                     // 3- Receives response message back from connection datagram
                                     // 4- Forwards it back to the socket
                                     if let Err(cause) = udpconn::handle_udp_accept(sock_addr, sock_send, conn_clone).await {
@@ -560,32 +559,22 @@ async fn connect_udp(args: ConnectUdpArgs) -> anyhow::Result<()> {
                                         // we should know about it, but it's not fatal
                                         tracing::warn!("error handling connection: {}", cause);
                                     }
-                                    tracing::info!("Closing UDP connection for {}", sock_addr);
+                                    // Cleanup resources for this connection since it's `Connection` is closed or errored out
                                     let mut cn = conns_clone.lock().await;
                                     cn.remove(&sock_addr);
-                                    tracing::info!("Connection {} removed from hashmap.", sock_addr);
                                 });
 
-                                // Store the connection
+                                // Store the connection and return
                                 let mut cn = conns.lock().await;
                                 cn.insert(sock_addr, connection.clone());
-
-                                tracing::info!("Connection stored for {}, returning.", sock_addr);
-
-                                // return
                                 &mut connection.clone()
                             }
                         };
 
-                        tracing::info!("connect_udp: Received {} bytes from {}", size, sock_addr);
-
                         // 1- Receives request message from socket
                         // 2- Forwards it to the connection datagram
-                        if let Err(e) = connection.send_datagram(Bytes::copy_from_slice(&buf[..size])) { // Bytes::copy_from_slice probably isn't the best way to do it. Investigate.
+                        if let Err(e) = connection.send_datagram(Bytes::copy_from_slice(&buf[..size])) { // Is Bytes::copy_from_slice most efficient way to do this?. Investigate.
                             tracing::error!("Error writing to connection datagram: {}", e);
-                            // TODO: Cleanup the resources on error.
-                            // Remove the failed connection
-                            // conns.remove(&sock_addr);
                             return Err(e.into());
                         }
                     }
