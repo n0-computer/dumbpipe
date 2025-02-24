@@ -17,8 +17,8 @@ rust-version = "1.81"
 anyhow = "1.0.75"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
-iroh = { version = "0.32", default-features = false }
-iroh-base = { version = "0.32", features = ["ticket"] }
+iroh = { version = "0.33", default-features = false }
+iroh-base = { version = "0.33", features = ["ticket"] }
 quinn = { version = "0.13", package = "iroh-quinn" }
 rand = "0.8.5"
 tokio = { version = "1.34.0", features = ["full"] }
@@ -29,7 +29,3 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 [dev-dependencies]
 duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
-
-[patch.crates-io]
-iroh = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
-iroh-base = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
