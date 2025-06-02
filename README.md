@@ -1,8 +1,8 @@
 # Dumb pipe
 
-This is an example to use [iroh-net](https://crates.io/crates/iroh-net) to create a dumb pipe to connect two machines with a QUIC connection.
+This is an example to use [iroh](https://crates.io/crates/iroh) to create a dumb pipe to connect two machines with a QUIC connection.
 
-Iroh-net will take case of hole punching and NAT traversal whenever possible, and fall back to a
+Iroh will take case of hole punching and NAT traversal whenever possible, and fall back to a
 relay if hole punching does not succeed.
 
 It is also useful as a standalone tool for quick copy jobs.
@@ -82,14 +82,16 @@ You can now browse the website on port 3001.
 ## Custom ALPNs
 
 Dumbpipe has an expert feature to specify a custom [ALPN](https://en.wikipedia.org/wiki/Application-Layer_Protocol_Negotiation) string. You can use it to interact with
-existing iroh-net services.
+existing iroh services.
 
-E.g. here is how to interact with the iroh-bytes
+E.g. here is how to interact with the iroh-blobs
 protocol:
 
 ```
 echo request1.bin | dumbpipe connect <ticket> --custom-alpn utf8:/iroh-bytes/2 > response1.bin 
 ```
+
+(`/iroh-bytes/2` is the ALPN string for the iroh-blobs protocol, which used to be called iroh-bytes.)
 
 if request1.bin contained a valid request for the `/iroh-bytes/2` protocol, response1.bin will
 now contain the response.
