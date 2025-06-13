@@ -15,6 +15,7 @@ rust-version = "1.81"
 
 [dependencies]
 anyhow = "1.0.75"
+bytes = "1.10.0"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
 iroh = { version = "0.35", default-features = false }

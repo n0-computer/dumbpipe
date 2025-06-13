@@ -4,15 +4,13 @@ use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
 use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
 use std::{
-    io,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    str::FromStr,
+    io, net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs}, str::FromStr
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    select,
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt}, select
 };
 use tokio_util::sync::CancellationToken;
+mod udp;
 
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
@@ -51,6 +49,15 @@ pub enum Commands {
     /// connecting to a TCP socket for which you have to specify the host and port.
     ListenTcp(ListenTcpArgs),
 
+    /// Listen on a magicsocket and forward incoming connections to the specified
+    /// host and port. Every incoming bidi stream is forwarded to a new connection.
+    ///
+    /// Will print a node ticket on stderr that can be used to connect.
+    ///
+    /// As far as the magic socket is concerned, this is listening. But it is
+    /// connecting to a UDP socket for which you have to specify the host and port.
+    ListenUdp(ListenUdpArgs),
+
     /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout.
     ///
     /// A node ticket is required to connect.
@@ -64,6 +71,15 @@ pub enum Commands {
     /// As far as the magic socket is concerned, this is connecting. But it is
     /// listening on a TCP socket for which you have to specify the interface and port.
     ConnectTcp(ConnectTcpArgs),
+
+    /// Connect to a magicsocket, open a bidi stream, and forward stdin/stdout
+    /// to it.
+    ///
+    /// A node ticket is required to connect.
+    ///
+    /// As far as the magic socket is concerned, this is connecting. But it is
+    /// listening on a UDP socket for which you have to specify the interface and port.
+    ConnectUdp(ConnectUdpArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -138,8 +154,32 @@ pub struct ListenTcpArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct ListenUdpArgs {
+    #[clap(long)]
+    pub host: String,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
+#[derive(Parser, Debug)]
 pub struct ConnectTcpArgs {
     /// The addresses to listen on for incoming tcp connections.
+    ///
+    /// To listen on all network interfaces, use 0.0.0.0:12345
+    #[clap(long)]
+    pub addr: String,
+
+    /// The node to connect to
+    pub ticket: NodeTicket,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
+#[derive(Parser, Debug)]
+pub struct ConnectUdpArgs {
+    /// The addresses to listen on for incoming udp connections.
     ///
     /// To listen on all network interfaces, use 0.0.0.0:12345
     #[clap(long)]
@@ -537,8 +577,10 @@ async fn main() -> anyhow::Result<()> {
     let res = match args.command {
         Commands::Listen(args) => listen_stdio(args).await,
         Commands::ListenTcp(args) => listen_tcp(args).await,
+        Commands::ListenUdp(args) => udp::listen_udp(args).await,
         Commands::Connect(args) => connect_stdio(args).await,
         Commands::ConnectTcp(args) => connect_tcp(args).await,
+        Commands::ConnectUdp(args) => udp::connect_udp(args).await,
     };
     match res {
         Ok(()) => std::process::exit(0),
