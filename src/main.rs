@@ -2,7 +2,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
+use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey, Watcher};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -217,7 +217,10 @@ fn get_or_create_secret() -> anyhow::Result<SecretKey> {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
             let key = SecretKey::generate(rand::rngs::OsRng);
-            eprintln!("using secret key {}", key);
+            eprintln!(
+                "using secret key {}",
+                data_encoding::HEXLOWER.encode(&key.to_bytes())
+            );
             Ok(key)
         }
     }
@@ -276,7 +279,7 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.home_relay().initialized().await?;
-    let node = endpoint.node_addr().await?;
+    let node = endpoint.node_addr().initialized().await?;
     let mut short = node.clone();
     let ticket = NodeTicket::new(node);
     short.direct_addresses.clear();
@@ -456,7 +459,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     let endpoint = builder.bind().await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.home_relay().initialized().await?;
-    let node_addr = endpoint.node_addr().await?;
+    let node_addr = endpoint.node_addr().initialized().await?;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
