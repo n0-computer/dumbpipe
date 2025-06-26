@@ -15,10 +15,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
-use std::path::PathBuf;
-
-#[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
+use {
+    std::path::PathBuf,
+    tokio::net::{UnixListener, UnixStream},
+};
 
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
@@ -697,7 +697,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> anyhow::Result<()> {
     let unix_listener = match UnixListener::bind(&socket_path) {
         Ok(unix_listener) => unix_listener,
         Err(cause) => {
-            tracing::error!("error binding unix socket to {:?}: {}", socket_path, cause);
+            tracing::error!("failed to bind Unix socket at {:?}: {}", socket_path, cause);
             return Ok(());
         }
     };

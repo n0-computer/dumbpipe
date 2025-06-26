@@ -298,8 +298,6 @@ mod unix_socket_tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::UnixStream;
 
     /// Generate a temp directory with a Unix socket path
     fn temp_socket_path() -> (TempDir, PathBuf) {
@@ -347,6 +345,9 @@ mod unix_socket_tests {
         let ticket = header.split_ascii_whitespace().last().unwrap();
         let ticket = NodeTicket::from_str(ticket).unwrap();
 
+        // Give listen-unix time to fully initialize
+        std::thread::sleep(Duration::from_millis(100));
+
         // Poke the listen-unix process with a connect command
         let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
             .env_remove("RUST_LOG") // disable tracing
@@ -360,23 +361,18 @@ mod unix_socket_tests {
         assert_eq!(&connect.stdout, b"hello from unix");
     }
 
-    #[tokio::test]
-    async fn connect_unix_happy() {
+    #[test]
+    fn connect_unix_happy() {
         let (_temp_dir, socket_path) = temp_socket_path();
-        let unix_to_magic = b"hello from unix";
-        let magic_to_unix = b"hello from magic";
-
-        // Start dumbpipe connect-unix (listens on Unix socket, connects to magic)
-        let barrier = wait2();
-        let barrier_clone = barrier.clone();
+        let b1 = wait2();
+        let b2 = b1.clone();
         let socket_path_clone = socket_path.clone();
 
-        let connect_unix_thread = std::thread::spawn(move || {
-            barrier_clone.wait();
-
+        // Start a dumbpipe listen process in background
+        let listen_thread = std::thread::spawn(move || {
             let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
                 .env_remove("RUST_LOG")
-                .stdin_bytes(magic_to_unix)
+                .stdin_bytes(b"hello from magic")
                 .stderr_to_stdout()
                 .reader()
                 .unwrap();
@@ -386,7 +382,9 @@ mod unix_socket_tests {
             let header = String::from_utf8(header).unwrap();
             let ticket = header.split_ascii_whitespace().last().unwrap();
 
-            // Start connect-unix with the ticket
+            b1.wait(); // Signal that ticket is ready
+
+            // Start connect-unix process
             let _connect_unix = duct::cmd(
                 dumbpipe_bin(),
                 [
@@ -400,25 +398,24 @@ mod unix_socket_tests {
             .start()
             .unwrap();
 
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(Duration::from_secs(2));
         });
 
-        barrier.wait();
+        // Wait for ticket to be ready
+        b2.wait();
 
-        // Give time for connect-unix to set up Unix socket
+        // Give connect-unix time to set up Unix socket
         std::thread::sleep(Duration::from_millis(500));
 
-        // Connect to the Unix socket
-        let mut unix_stream = UnixStream::connect(&socket_path).await.unwrap();
-        unix_stream.write_all(unix_to_magic).await.unwrap();
-        unix_stream.flush().await.unwrap();
+        // Connect to Unix socket and test data flow
+        let mut unix_stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
+        std::io::Write::write_all(&mut unix_stream, b"hello from unix").unwrap();
+        std::io::Write::flush(&mut unix_stream).unwrap();
 
         let mut buf = Vec::new();
-        unix_stream.read_to_end(&mut buf).await.unwrap();
-        assert_eq!(&buf, magic_to_unix);
+        std::io::Read::read_to_end(&mut unix_stream, &mut buf).unwrap();
+        assert_eq!(&buf, b"hello from magic");
 
-        connect_unix_thread.join().unwrap();
-
-        // TempDir automatically cleans up when dropped
+        listen_thread.join().unwrap();
     }
 }
