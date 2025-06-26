@@ -292,3 +292,133 @@ fn connect_tcp_happy() {
     conn.read_to_end(&mut buf).unwrap();
     assert_eq!(&buf, b"hello from listen\n");
 }
+
+#[cfg(unix)]
+mod unix_socket_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    /// Generate a temp directory with a Unix socket path
+    fn temp_socket_path() -> (TempDir, PathBuf) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("test.sock");
+        (temp_dir, socket_path)
+    }
+
+    #[test]
+    fn listen_unix_happy() {
+        let (_temp_dir, socket_path) = temp_socket_path();
+        let b1 = wait2();
+        let b2 = b1.clone();
+        let socket_path_clone = socket_path.clone();
+
+        // Start a dummy unix server and wait for a single incoming connection
+        std::thread::spawn(move || {
+            let listener = std::os::unix::net::UnixListener::bind(&socket_path_clone).unwrap();
+            b1.wait();
+            let (mut stream, _) = listener.accept().unwrap();
+            std::io::Write::write_all(&mut stream, b"hello from unix").unwrap();
+            std::io::Write::flush(&mut stream).unwrap();
+            drop(stream);
+        });
+
+        // Wait for the unix listener to start
+        b2.wait();
+
+        // Start a dumbpipe listen-unix process
+        let mut listen_unix = duct::cmd(
+            dumbpipe_bin(),
+            [
+                "listen-unix",
+                "--socket-path",
+                socket_path.to_str().unwrap(),
+            ],
+        )
+        .env_remove("RUST_LOG") // disable tracing
+        .stderr_to_stdout()
+        .reader()
+        .unwrap();
+
+        let header = read_ascii_lines(4, &mut listen_unix).unwrap();
+        let header = String::from_utf8(header).unwrap();
+        let ticket = header.split_ascii_whitespace().last().unwrap();
+        let ticket = NodeTicket::from_str(ticket).unwrap();
+
+        // Poke the listen-unix process with a connect command
+        let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+            .env_remove("RUST_LOG") // disable tracing
+            .stderr_null()
+            .stdout_capture()
+            .stdin_bytes(b"hello from connect")
+            .run()
+            .unwrap();
+
+        assert!(connect.status.success());
+        assert_eq!(&connect.stdout, b"hello from unix");
+    }
+
+    #[tokio::test]
+    async fn connect_unix_happy() {
+        let (_temp_dir, socket_path) = temp_socket_path();
+        let unix_to_magic = b"hello from unix";
+        let magic_to_unix = b"hello from magic";
+
+        // Start dumbpipe connect-unix (listens on Unix socket, connects to magic)
+        let barrier = wait2();
+        let barrier_clone = barrier.clone();
+        let socket_path_clone = socket_path.clone();
+
+        let connect_unix_thread = std::thread::spawn(move || {
+            barrier_clone.wait();
+
+            let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+                .env_remove("RUST_LOG")
+                .stdin_bytes(magic_to_unix)
+                .stderr_to_stdout()
+                .reader()
+                .unwrap();
+
+            // Parse ticket from header
+            let header = read_ascii_lines(3, &mut listen).unwrap();
+            let header = String::from_utf8(header).unwrap();
+            let ticket = header.split_ascii_whitespace().last().unwrap();
+
+            // Start connect-unix with the ticket
+            let _connect_unix = duct::cmd(
+                dumbpipe_bin(),
+                [
+                    "connect-unix",
+                    "--socket-path",
+                    socket_path_clone.to_str().unwrap(),
+                    ticket,
+                ],
+            )
+            .env_remove("RUST_LOG")
+            .start()
+            .unwrap();
+
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+        barrier.wait();
+
+        // Give time for connect-unix to set up Unix socket
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Connect to the Unix socket
+        let mut unix_stream = UnixStream::connect(&socket_path).await.unwrap();
+        unix_stream.write_all(unix_to_magic).await.unwrap();
+        unix_stream.flush().await.unwrap();
+
+        let mut buf = Vec::new();
+        unix_stream.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(&buf, magic_to_unix);
+
+        connect_unix_thread.join().unwrap();
+
+        // TempDir automatically cleans up when dropped
+    }
+}

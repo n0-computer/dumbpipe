@@ -14,6 +14,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+use std::path::PathBuf;
+
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
+
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
 /// One side listens, the other side connects. Both sides are identified by a
@@ -64,6 +70,26 @@ pub enum Commands {
     /// As far as the magic socket is concerned, this is connecting. But it is
     /// listening on a TCP socket for which you have to specify the interface and port.
     ConnectTcp(ConnectTcpArgs),
+
+    #[cfg(unix)]
+    /// Listen on a magicsocket and forward incoming connections to the specified
+    /// Unix socket path. Every incoming bidi stream is forwarded to a new connection.
+    ///
+    /// Will print a node ticket on stderr that can be used to connect.
+    ///
+    /// As far as the magic socket is concerned, this is listening. But it is
+    /// connecting to a Unix socket for which you have to specify the path.
+    ListenUnix(ListenUnixArgs),
+
+    #[cfg(unix)]
+    /// Connect to a magicsocket, open a bidi stream, and forward connections
+    /// from the specified Unix socket path.
+    ///
+    /// A node ticket is required to connect.
+    ///
+    /// As far as the magic socket is concerned, this is connecting. But it is
+    /// listening on a Unix socket for which you have to specify the path.
+    ConnectUnix(ConnectUnixArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -161,6 +187,31 @@ pub struct ConnectArgs {
     pub common: CommonArgs,
 }
 
+#[cfg(unix)]
+#[derive(Parser, Debug)]
+pub struct ListenUnixArgs {
+    /// Path to the Unix socket to connect to
+    #[clap(long)]
+    pub socket_path: PathBuf,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
+#[cfg(unix)]
+#[derive(Parser, Debug)]
+pub struct ConnectUnixArgs {
+    /// Path to the Unix socket to listen on
+    #[clap(long)]
+    pub socket_path: PathBuf,
+
+    /// The node to connect to
+    pub ticket: NodeTicket,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
 /// Copy from a reader to a quinn stream.
 ///
 /// Will send a reset to the other side if the operation is cancelled, and fail
@@ -182,7 +233,7 @@ async fn copy_to_quinn(
         _ = token.cancelled() => {
             // send a reset to the other side immediately
             send.reset(0u8.into()).ok();
-            Err(io::Error::new(io::ErrorKind::Other, "cancelled"))
+            Err(io::Error::other("cancelled"))
         }
     }
 }
@@ -204,7 +255,7 @@ async fn copy_from_quinn(
         },
         _ = token.cancelled() => {
             recv.stop(0u8.into()).ok();
-            Err(io::Error::new(io::ErrorKind::Other, "cancelled"))
+            Err(io::Error::other("cancelled"))
         }
     }
 }
@@ -530,6 +581,186 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+/// Listen on a magicsocket and forward incoming connections to a Unix socket.
+async fn listen_unix(args: ListenUnixArgs) -> anyhow::Result<()> {
+    let socket_path = args.socket_path.clone();
+    let secret_key = get_or_create_secret()?;
+    let mut builder = Endpoint::builder()
+        .alpns(vec![args.common.alpn()?])
+        .secret_key(secret_key);
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await?;
+    // wait for the endpoint to figure out its address before making a ticket
+    endpoint.home_relay().initialized().await?;
+    let node_addr = endpoint.node_addr().await?;
+    let mut short = node_addr.clone();
+    let ticket = NodeTicket::new(node_addr);
+    short.direct_addresses.clear();
+    let short = NodeTicket::new(short);
+
+    // print the ticket on stderr so it doesn't interfere with the data itself
+    //
+    // note that the tests rely on the ticket being the last thing printed
+    eprintln!(
+        "Forwarding incoming requests to '{}'.",
+        socket_path.display()
+    );
+    eprintln!("To connect, use e.g.:");
+    eprintln!("dumbpipe connect {ticket}");
+    if args.common.verbose > 0 {
+        eprintln!("or:\ndumbpipe connect {}", short);
+    }
+    tracing::info!("node id is {}", ticket.node_addr().node_id);
+    tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
+
+    // handle a new incoming connection on the magic endpoint
+    async fn handle_magic_accept(
+        connecting: Connecting,
+        socket_path: PathBuf,
+        handshake: bool,
+    ) -> anyhow::Result<()> {
+        let connection = connecting.await.context("error accepting connection")?;
+        let remote_node_id = &connection.remote_node_id()?;
+        tracing::info!("got connection from {}", remote_node_id);
+        let (s, mut r) = connection
+            .accept_bi()
+            .await
+            .context("error accepting stream")?;
+        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        if handshake {
+            // read the handshake and verify it
+            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
+            r.read_exact(&mut buf).await?;
+            anyhow::ensure!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+        }
+        let connection = UnixStream::connect(&socket_path)
+            .await
+            .context(format!("error connecting to {:?}", socket_path))?;
+        let (read, write) = connection.into_split();
+        forward_bidi(read, write, r, s).await?;
+        Ok(())
+    }
+
+    loop {
+        let incoming = select! {
+            incoming = endpoint.accept() => incoming,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("got ctrl-c, exiting");
+                break;
+            }
+        };
+        let Some(incoming) = incoming else {
+            break;
+        };
+        let Ok(connecting) = incoming.accept() else {
+            break;
+        };
+        let socket_path = socket_path.clone();
+        let handshake = !args.common.is_custom_alpn();
+        tokio::spawn(async move {
+            if let Err(cause) = handle_magic_accept(connecting, socket_path, handshake).await {
+                // log error at warn level
+                //
+                // we should know about it, but it's not fatal
+                tracing::warn!("error handling connection: {}", cause);
+            }
+        });
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+/// Listen on a Unix socket and forward connections to a magicsocket.
+async fn connect_unix(args: ConnectUnixArgs) -> anyhow::Result<()> {
+    let socket_path = args.socket_path.clone();
+    let secret_key = get_or_create_secret()?;
+    let mut builder = Endpoint::builder().alpns(vec![]).secret_key(secret_key);
+
+    if let Some(addr) = args.common.magic_ipv4_addr {
+        builder = builder.bind_addr_v4(addr);
+    }
+    if let Some(addr) = args.common.magic_ipv6_addr {
+        builder = builder.bind_addr_v6(addr);
+    }
+    let endpoint = builder.bind().await.context("unable to bind magicsock")?;
+    tracing::info!("unix listening on {:?}", socket_path);
+
+    // Remove existing socket file if it exists
+    let _ = tokio::fs::remove_file(&socket_path).await;
+
+    let unix_listener = match UnixListener::bind(&socket_path) {
+        Ok(unix_listener) => unix_listener,
+        Err(cause) => {
+            tracing::error!("error binding unix socket to {:?}: {}", socket_path, cause);
+            return Ok(());
+        }
+    };
+
+    async fn handle_unix_accept(
+        next: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
+        addr: NodeAddr,
+        endpoint: Endpoint,
+        handshake: bool,
+        alpn: &[u8],
+    ) -> anyhow::Result<()> {
+        let (unix_stream, unix_addr) = next.context("error accepting unix connection")?;
+        let (unix_recv, unix_send) = unix_stream.into_split();
+        tracing::info!("got unix connection from {:?}", unix_addr);
+        let remote_node_id = addr.node_id;
+        let connection = endpoint
+            .connect(addr, alpn)
+            .await
+            .context(format!("error connecting to {}", remote_node_id))?;
+        let (mut magic_send, magic_recv) = connection
+            .open_bi()
+            .await
+            .context(format!("error opening bidi stream to {}", remote_node_id))?;
+        // send the handshake unless we are using a custom alpn
+        // when using a custom alpn, everything is up to the user
+        if handshake {
+            // the connecting side must write first. we don't know if there will be something
+            // on stdin, so just write a handshake.
+            magic_send.write_all(&dumbpipe::HANDSHAKE).await?;
+        }
+        forward_bidi(unix_recv, unix_send, magic_recv, magic_send).await?;
+        anyhow::Ok(())
+    }
+
+    let addr = args.ticket.node_addr();
+    loop {
+        // also wait for ctrl-c here so we can use it before accepting a connection
+        let next = tokio::select! {
+            stream = unix_listener.accept() => stream,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("got ctrl-c, exiting");
+                break;
+            }
+        };
+        let endpoint = endpoint.clone();
+        let addr = addr.clone();
+        let handshake = !args.common.is_custom_alpn();
+        let alpn = args.common.alpn()?;
+        tokio::spawn(async move {
+            if let Err(cause) = handle_unix_accept(next, addr, endpoint, handshake, &alpn).await {
+                // log error at warn level
+                //
+                // we should know about it, but it's not fatal
+                tracing::warn!("error handling connection: {}", cause);
+            }
+        });
+    }
+
+    // Clean up socket file on exit
+    let _ = tokio::fs::remove_file(&socket_path).await;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -539,6 +770,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::ListenTcp(args) => listen_tcp(args).await,
         Commands::Connect(args) => connect_stdio(args).await,
         Commands::ConnectTcp(args) => connect_tcp(args).await,
+
+        #[cfg(unix)]
+        Commands::ListenUnix(args) => listen_unix(args).await,
+
+        #[cfg(unix)]
+        Commands::ConnectUnix(args) => connect_unix(args).await,
     };
     match res {
         Ok(()) => std::process::exit(0),
