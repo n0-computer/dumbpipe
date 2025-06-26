@@ -615,7 +615,10 @@ async fn listen_unix(args: ListenUnixArgs) -> anyhow::Result<()> {
     eprintln!("dumbpipe connect-unix --socket-path /path/to/client.sock {ticket}");
     eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect-unix --socket-path /path/to/client.sock {}", short);
+        eprintln!(
+            "or:\ndumbpipe connect-unix --socket-path /path/to/client.sock {}",
+            short
+        );
         eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {}", short);
     }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
