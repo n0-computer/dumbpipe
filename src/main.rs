@@ -268,7 +268,7 @@ fn get_or_create_secret() -> anyhow::Result<SecretKey> {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
             let key = SecretKey::generate(rand::rngs::OsRng);
-            eprintln!("using secret key {}", key);
+            eprintln!("using secret key {key}");
             Ok(key)
         }
     }
@@ -336,9 +336,9 @@ async fn listen_stdio(args: ListenArgs) -> anyhow::Result<()> {
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
     // note that the tests rely on the ticket being the last thing printed
-    eprintln!("Listening. To connect, use:\ndumbpipe connect {}", ticket);
+    eprintln!("Listening. To connect, use:\ndumbpipe connect {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect {}", short);
+        eprintln!("or:\ndumbpipe connect {short}");
     }
 
     loop {
@@ -447,11 +447,11 @@ async fn connect_tcp(args: ConnectTcpArgs) -> anyhow::Result<()> {
         let connection = endpoint
             .connect(addr, alpn)
             .await
-            .context(format!("error connecting to {}", remote_node_id))?;
+            .context(format!("error connecting to {remote_node_id}"))?;
         let (mut magic_send, magic_recv) = connection
             .open_bi()
             .await
-            .context(format!("error opening bidi stream to {}", remote_node_id))?;
+            .context(format!("error opening bidi stream to {remote_node_id}"))?;
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, evertyhing is up to the user
         if handshake {
@@ -520,7 +520,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
     eprintln!("To connect, use e.g.:");
     eprintln!("dumbpipe connect-tcp {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect-tcp {}", short);
+        eprintln!("or:\ndumbpipe connect-tcp {short}");
     }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
     tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
@@ -547,7 +547,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> anyhow::Result<()> {
         }
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
-            .context(format!("error connecting to {:?}", addrs))?;
+            .context(format!("error connecting to {addrs:?}"))?;
         let (read, write) = connection.into_split();
         forward_bidi(read, write, r, s).await?;
         Ok(())
@@ -615,11 +615,8 @@ async fn listen_unix(args: ListenUnixArgs) -> anyhow::Result<()> {
     eprintln!("dumbpipe connect-unix --socket-path /path/to/client.sock {ticket}");
     eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {ticket}");
     if args.common.verbose > 0 {
-        eprintln!(
-            "or:\ndumbpipe connect-unix --socket-path /path/to/client.sock {}",
-            short
-        );
-        eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {}", short);
+        eprintln!("or:\ndumbpipe connect-unix --socket-path /path/to/client.sock {short}");
+        eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {short}");
     }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
     tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
@@ -646,7 +643,7 @@ async fn listen_unix(args: ListenUnixArgs) -> anyhow::Result<()> {
         }
         let connection = UnixStream::connect(&socket_path)
             .await
-            .context(format!("error connecting to {:?}", socket_path))?;
+            .context(format!("error connecting to {socket_path:?}"))?;
         let (read, write) = connection.into_split();
         forward_bidi(read, write, r, s).await?;
         Ok(())
@@ -721,11 +718,11 @@ async fn connect_unix(args: ConnectUnixArgs) -> anyhow::Result<()> {
         let connection = endpoint
             .connect(addr, alpn)
             .await
-            .context(format!("error connecting to {}", remote_node_id))?;
+            .context(format!("error connecting to {remote_node_id}"))?;
         let (mut magic_send, magic_recv) = connection
             .open_bi()
             .await
-            .context(format!("error opening bidi stream to {}", remote_node_id))?;
+            .context(format!("error opening bidi stream to {remote_node_id}"))?;
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, everything is up to the user
         if handshake {
@@ -785,7 +782,7 @@ async fn main() -> anyhow::Result<()> {
     match res {
         Ok(()) => std::process::exit(0),
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1)
         }
     }
