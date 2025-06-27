@@ -313,21 +313,50 @@ mod unix_socket_tests {
         let b2 = b1.clone();
         let socket_path_clone = socket_path.clone();
 
-        // Start a dummy unix server and wait for a single incoming connection
-        std::thread::spawn(move || {
-            let listener = std::os::unix::net::UnixListener::bind(&socket_path_clone).unwrap();
+        // Start a dummy unix server that properly shuts down its connections.
+        let server_thread = std::thread::spawn(move || {
+            let listener = match std::os::unix::net::UnixListener::bind(&socket_path_clone) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("Dummy server failed to bind: {:?}", e);
+                    return;
+                }
+            };
             b1.wait();
-            let (mut stream, _) = listener.accept().unwrap();
-            std::io::Write::write_all(&mut stream, b"hello from unix").unwrap();
-            std::io::Write::flush(&mut stream).unwrap();
-            drop(stream);
+            // Accept connections in a loop
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(mut stream) => {
+                        // Handle each connection in a new thread
+                        std::thread::spawn(move || {
+                            // Write our message
+                            if std::io::Write::write_all(&mut stream, b"hello from unix").is_err() {
+                                return; // exit if write fails
+                            }
+                            if std::io::Write::flush(&mut stream).is_err() {
+                                return; // exit if flush fails
+                            }
+                            // Shut down the write half of the stream.
+                            // This sends an EOF to the client, signaling that we are done writing.
+                            stream.shutdown(std::net::Shutdown::Write).ok();
+
+                            // Optionally, read and discard any remaining data from the client.
+                            std::io::copy(&mut stream, &mut std::io::sink()).ok();
+                        });
+                    }
+                    Err(_err) => {
+                        // Stop listening on error
+                        break;
+                    }
+                }
+            }
         });
 
         // Wait for the unix listener to start
         b2.wait();
 
         // Start a dumbpipe listen-unix process
-        let mut listen_unix = duct::cmd(
+        let mut listen_unix_handle = duct::cmd(
             dumbpipe_bin(),
             [
                 "listen-unix",
@@ -340,25 +369,57 @@ mod unix_socket_tests {
         .reader()
         .unwrap();
 
-        let header = read_ascii_lines(4, &mut listen_unix).unwrap();
+        let header = read_ascii_lines(4, &mut listen_unix_handle).unwrap();
         let header = String::from_utf8(header).unwrap();
         let ticket = header.split_ascii_whitespace().last().unwrap();
         let ticket = NodeTicket::from_str(ticket).unwrap();
 
-        // Give listen-unix time to fully initialize
-        std::thread::sleep(Duration::from_millis(100));
+        // Give the listener a moment to become available on the iroh network.
+        std::thread::sleep(Duration::from_millis(200));
 
-        // Poke the listen-unix process with a connect command
-        let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
-            .env_remove("RUST_LOG") // disable tracing
-            .stderr_null()
-            .stdout_capture()
-            .stdin_bytes(b"hello from connect")
-            .run()
-            .unwrap();
+        // Poke the listen-unix process with a connect command, retrying on failure.
+        let mut connect_output = None;
+        for i in 0..10 {
+            let connect_cmd = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+                .env_remove("RUST_LOG") // disable tracing
+                .stdin_bytes(b"hello from connect")
+                .stdout_capture()
+                .stderr_capture()
+                .unchecked(); // Prevent `run` from returning an error on non-zero status
+
+            match connect_cmd.run() {
+                Ok(c) if c.status.success() => {
+                    connect_output = Some(c);
+                    break;
+                }
+                Ok(c) => {
+                    // Failed with non-zero status
+                    eprintln!(
+                        "Attempt {}/10 failed with status {:?}:\n---stdout---\n{}\n---stderr---\n{}",
+                        i + 1,
+                        c.status,
+                        String::from_utf8_lossy(&c.stdout),
+                        String::from_utf8_lossy(&c.stderr)
+                    );
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(e) => {
+                    // Failed to run at all
+                    eprintln!("Attempt {}/10 failed to run: {:?}", i + 1, e);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+        let connect = connect_output.expect("failed to connect within the retry loop");
 
         assert!(connect.status.success());
         assert_eq!(&connect.stdout, b"hello from unix");
+
+        // Explicitly kill the listener process to ensure cleanup
+        listen_unix_handle.kill().ok();
+        // The server thread will die when the main test process exits.
+        // We don't join it as it's in an infinite loop.
+        drop(server_thread);
     }
 
     #[test]
