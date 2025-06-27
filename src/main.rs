@@ -182,7 +182,7 @@ async fn copy_to_quinn(
         _ = token.cancelled() => {
             // send a reset to the other side immediately
             send.reset(0u8.into()).ok();
-            Err(io::Error::new(io::ErrorKind::Other, "cancelled"))
+            Err(io::Error::other("cancelled"))
         }
     }
 }
@@ -204,7 +204,7 @@ async fn copy_from_quinn(
         },
         _ = token.cancelled() => {
             recv.stop(0u8.into()).ok();
-            Err(io::Error::new(io::ErrorKind::Other, "cancelled"))
+            Err(io::Error::other("cancelled"))
         }
     }
 }
@@ -288,9 +288,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
     // note that the tests rely on the ticket being the last thing printed
-    eprintln!("Listening. To connect, use:\ndumbpipe connect {}", ticket);
+    eprintln!("Listening. To connect, use:\ndumbpipe connect {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect {}", short);
+        eprintln!("or:\ndumbpipe connect {short}");
     }
 
     loop {
@@ -399,11 +399,11 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         let connection = endpoint
             .connect(addr, alpn)
             .await
-            .context(format!("error connecting to {}", remote_node_id))?;
+            .context(format!("error connecting to {remote_node_id}"))?;
         let (mut magic_send, magic_recv) = connection
             .open_bi()
             .await
-            .context(format!("error opening bidi stream to {}", remote_node_id))?;
+            .context(format!("error opening bidi stream to {remote_node_id}"))?;
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, evertyhing is up to the user
         if handshake {
@@ -472,7 +472,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     eprintln!("To connect, use e.g.:");
     eprintln!("dumbpipe connect-tcp {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect-tcp {}", short);
+        eprintln!("or:\ndumbpipe connect-tcp {short}");
     }
     tracing::info!("node id is {}", ticket.node_addr().node_id);
     tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
@@ -499,7 +499,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         }
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
-            .context(format!("error connecting to {:?}", addrs))?;
+            .context(format!("error connecting to {addrs:?}"))?;
         let (read, write) = connection.into_split();
         forward_bidi(read, write, r, s).await?;
         Ok(())
@@ -546,7 +546,7 @@ async fn main() -> Result<()> {
     match res {
         Ok(()) => std::process::exit(0),
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             std::process::exit(1)
         }
     }
