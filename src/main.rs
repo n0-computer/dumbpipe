@@ -678,6 +678,23 @@ async fn listen_unix(args: ListenUnixArgs) -> anyhow::Result<()> {
 }
 
 #[cfg(unix)]
+/// A RAII guard to clean up a Unix socket file.
+struct UnixSocketGuard {
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for UnixSocketGuard {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::error!("failed to remove socket file {:?}: {}", self.path, e);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 /// Listen on a Unix socket and forward connections to a magicsocket.
 async fn connect_unix(args: ConnectUnixArgs) -> anyhow::Result<()> {
     let socket_path = args.socket_path.clone();
@@ -694,14 +711,17 @@ async fn connect_unix(args: ConnectUnixArgs) -> anyhow::Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Remove existing socket file if it exists
-    let _ = tokio::fs::remove_file(&socket_path).await;
-
-    let unix_listener = match UnixListener::bind(&socket_path) {
-        Ok(unix_listener) => unix_listener,
-        Err(cause) => {
-            tracing::error!("failed to bind Unix socket at {:?}: {}", socket_path, cause);
-            return Ok(());
+    if let Err(e) = tokio::fs::remove_file(&socket_path).await {
+        if e.kind() != io::ErrorKind::NotFound {
+            anyhow::bail!("failed to remove existing socket file: {}", e);
         }
+    }
+
+    let unix_listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("failed to bind Unix socket at {:?}", socket_path))?;
+
+    let _guard = UnixSocketGuard {
+        path: socket_path.clone(),
     };
 
     async fn handle_unix_accept(
@@ -758,8 +778,6 @@ async fn connect_unix(args: ConnectUnixArgs) -> anyhow::Result<()> {
         });
     }
 
-    // Clean up socket file on exit
-    let _ = tokio::fs::remove_file(&socket_path).await;
     Ok(())
 }
 
