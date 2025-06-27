@@ -316,7 +316,7 @@ mod unix_socket_tests {
                 Ok(l) => l,
                 Err(e) => {
                     // Don't panic here, just print an error and exit the thread.
-                    eprintln!("Dummy server failed to bind: {:?}", e);
+                    eprintln!("Dummy server failed to bind: {e:?}");
                     return;
                 }
             };

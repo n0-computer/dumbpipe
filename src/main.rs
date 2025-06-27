@@ -692,7 +692,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     }
 
     let unix_listener = UnixListener::bind(&socket_path)
-        .with_context(|| format!("failed to bind Unix socket at {:?}", socket_path))?;
+        .with_context(|| format!("failed to bind Unix socket at {socket_path:?}"))?;
 
     let _guard = UnixSocketGuard {
         path: socket_path.clone(),
