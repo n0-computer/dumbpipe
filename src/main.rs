@@ -424,6 +424,10 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .await
         .context("unable to bind endpoint")?;
     tracing::info!("tcp listening on {:?}", addrs);
+
+    // Wait for our own endpoint to be ready before trying to connect.
+    endpoint.home_relay().initialized().await?;
+
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
         Err(cause) => {
@@ -607,6 +611,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         socket_path: PathBuf,
         handshake: bool,
     ) -> Result<()> {
+        tracing::trace!("accepting connection");
         let connection = connecting.await.context("error accepting connection")?;
         let remote_node_id = &connection.remote_node_id()?;
         tracing::info!("got connection from {}", remote_node_id);
@@ -617,15 +622,21 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         tracing::info!("accepted bidi stream from {}", remote_node_id);
         if handshake {
             // read the handshake and verify it
+            tracing::trace!("reading handshake");
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
             r.read_exact(&mut buf).await.e()?;
             snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            tracing::trace!("handshake verified");
         }
+        tracing::trace!("connecting to backend socket {:?}", socket_path);
         let connection = UnixStream::connect(&socket_path)
             .await
             .context(format!("error connecting to {socket_path:?}"))?;
+        tracing::trace!("connected to backend socket");
         let (read, write) = connection.into_split();
+        tracing::trace!("starting forward_bidi");
         forward_bidi(read, write, r, s).await?;
+        tracing::trace!("forward_bidi finished");
         Ok(())
     }
 
@@ -684,6 +695,9 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         .context("unable to bind endpoint")?;
     tracing::info!("unix listening on {:?}", socket_path);
 
+    // Wait for our own endpoint to be ready before trying to connect.
+    endpoint.home_relay().initialized().await?;
+
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
         if e.kind() != io::ErrorKind::NotFound {
@@ -691,8 +705,17 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         }
     }
 
+    let addr = args.ticket.node_addr();
+    tracing::info!("connecting to remote node: {:?}", addr);
+    let connection = endpoint
+        .connect(addr.clone(), &args.common.alpn()?)
+        .await
+        .context("failed to connect to remote node")?;
+    tracing::info!("connected to remote node successfully");
+
     let unix_listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind Unix socket at {socket_path:?}"))?;
+    tracing::info!("bound local unix socket: {:?}", socket_path);
 
     let _guard = UnixSocketGuard {
         path: socket_path.clone(),
@@ -700,35 +723,38 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
 
     async fn handle_unix_accept(
         next: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
-        addr: NodeAddr,
-        endpoint: Endpoint,
+        connection: iroh::endpoint::Connection,
         handshake: bool,
-        alpn: &[u8],
     ) -> Result<()> {
+        tracing::trace!("handling new local connection");
         let (unix_stream, unix_addr) = next.context("error accepting unix connection")?;
         let (unix_recv, unix_send) = unix_stream.into_split();
-        tracing::info!("got unix connection from {:?}", unix_addr);
-        let remote_node_id = addr.node_id;
-        let connection = endpoint
-            .connect(addr, alpn)
-            .await
-            .context(format!("error connecting to {remote_node_id}"))?;
+        tracing::trace!("got unix connection from {:?}", unix_addr);
+
+        tracing::trace!("opening bidi stream");
         let (mut endpoint_send, endpoint_recv) = connection
             .open_bi()
             .await
-            .context(format!("error opening bidi stream to {remote_node_id}"))?;
+            .context("error opening bidi stream")?;
+        tracing::trace!("bidi stream opened");
+
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, everything is up to the user
         if handshake {
+            tracing::trace!("sending handshake");
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
             endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.e()?;
+            tracing::trace!("handshake sent");
         }
+
+        tracing::trace!("starting forward_bidi");
         forward_bidi(unix_recv, unix_send, endpoint_recv, endpoint_send).await?;
+        tracing::trace!("forward_bidi finished");
         Ok(())
     }
 
-    let addr = args.ticket.node_addr();
+    tracing::info!("entering accept loop");
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
         let next = tokio::select! {
@@ -738,17 +764,18 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
                 break;
             }
         };
-        let endpoint = endpoint.clone();
-        let addr = addr.clone();
+        tracing::trace!("accepted a local connection");
+        let connection = connection.clone();
         let handshake = !args.common.is_custom_alpn();
-        let alpn = args.common.alpn()?;
         tokio::spawn(async move {
-            if let Err(cause) = handle_unix_accept(next, addr, endpoint, handshake, &alpn).await {
+            tracing::trace!("spawning handler task");
+            if let Err(cause) = handle_unix_accept(next, connection, handshake).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
                 tracing::warn!("error handling connection: {}", cause);
             }
+            tracing::trace!("handler task finished");
         });
     }
 

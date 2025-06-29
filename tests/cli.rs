@@ -293,11 +293,43 @@ fn connect_tcp_happy() {
     assert_eq!(&buf, b"hello from listen\n");
 }
 
-#[cfg(unix)]
+/// Integration test for Unix-domain socket tunneling.
+///
+/// Validates end-to-end operation between `listen-unix` and `connect-unix`:
+/// - A dummy backend server echoes a reply.
+/// - `listen-unix` connects to the backend and exposes a ticket.
+/// - `connect-unix` consumes the ticket and exposes a new Unix socket.
+/// - The test exchanges messages to assert correct data flow.
+#[cfg(all(test, unix))]
 mod unix_socket_tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::io::{BufRead, Read, Write};
+    use std::net::Shutdown;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
+
+    /// Polls until the condition returns true or timeout is reached.
+    fn wait_until<F>(timeout: Duration, mut condition: F)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while !condition() {
+            if Instant::now() >= deadline {
+                panic!("timeout waiting for condition");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Waits until a filesystem path exists.
+    fn wait_for_path<P: AsRef<Path>>(path: P, timeout: Duration) {
+        let p = path.as_ref().to_path_buf();
+        wait_until(timeout, move || p.exists());
+    }
 
     /// Generate a temp directory with a Unix socket path
     fn temp_socket_path() -> (TempDir, PathBuf) {
@@ -306,39 +338,48 @@ mod unix_socket_tests {
         (temp_dir, socket_path)
     }
 
+    /// Helper to drain stderr from a process in a background thread
+    fn drain_stderr(
+        stderr: std::process::ChildStderr,
+        prefix: &'static str,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("[{prefix}] {line}");
+            }
+        })
+    }
+
     /// A dummy unix server that accepts multiple connections and handles them properly.
     fn dummy_unix_server(
         socket_path: PathBuf,
         barrier: Arc<Barrier>,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let listener = match std::os::unix::net::UnixListener::bind(&socket_path) {
-                Ok(l) => l,
-                Err(e) => {
-                    // Don't panic here, just print an error and exit the thread.
-                    eprintln!("Dummy server failed to bind: {e:?}");
-                    return;
-                }
-            };
+            let _ = std::fs::remove_file(&socket_path);
+            let listener = UnixListener::bind(&socket_path).unwrap();
             barrier.wait();
             // Accept connections in a loop
             for stream in listener.incoming() {
                 if let Ok(mut stream) = stream {
                     // Handle each connection in a new thread
                     std::thread::spawn(move || {
-                        if std::io::Write::write_all(&mut stream, b"hello from unix").is_err() {
-                            return;
+                        let mut buf = vec![0; 1024];
+                        // Block here waiting for data from the client via the proxy
+                        if let Ok(n) = stream.read(&mut buf) {
+                            if n > 0 {
+                                // once we get data, write a response
+                                if stream.write_all(b"hello from unix").is_ok() {
+                                    // cleanly shutdown the write side
+                                    stream.shutdown(Shutdown::Write).ok();
+                                }
+                            }
                         }
-                        if std::io::Write::flush(&mut stream).is_err() {
-                            return;
-                        }
-                        // Shut down the write half of the stream to signal EOF.
-                        stream.shutdown(std::net::Shutdown::Write).ok();
-                        // Read and discard any remaining data from the client.
-                        std::io::copy(&mut stream, &mut std::io::sink()).ok();
+                        // now drain the read side to allow the client to close gracefully
+                        while stream.read(&mut buf).unwrap_or(0) > 0 {}
                     });
                 } else {
-                    // Stop listening on error
                     break;
                 }
             }
@@ -346,122 +387,104 @@ mod unix_socket_tests {
     }
 
     #[test]
-    fn listen_unix_happy() {
-        let (_temp_dir, socket_path) = temp_socket_path();
-        let b1 = wait2();
-        let b2 = b1.clone();
+    fn unix_socket_roundtrip() {
+        // Create temp socket paths for the backend and the client-facing side.
+        let (_tmp_dir, backend_sock) = temp_socket_path();
+        let client_sock = backend_sock.with_extension("client");
 
-        // Start the dummy unix server in the background.
-        let server_thread = dummy_unix_server(socket_path.clone(), b1);
+        // Barrier to sync backend server readiness.
+        let barrier = Arc::new(Barrier::new(2));
 
-        // Wait for the unix listener to start.
-        b2.wait();
+        // Spawn a dummy backend server.
+        let _backend_thread = dummy_unix_server(backend_sock.clone(), barrier.clone());
 
-        // Start a dumbpipe listen-unix process.
-        let mut listen_unix_handle = duct::cmd(
-            dumbpipe_bin(),
-            [
+        // Wait for the backend to be ready.
+        barrier.wait();
+
+        // Actively probe the backend server to ensure it's accepting connections.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if UnixStream::connect(&backend_sock).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if UnixStream::connect(&backend_sock).is_err() {
+            panic!("backend server not connectable after 5s");
+        }
+
+        // Launch listen-unix targeting the backend.
+        let mut listen_proc = std::process::Command::new(dumbpipe_bin())
+            .args([
                 "listen-unix",
                 "--socket-path",
-                socket_path.to_str().unwrap(),
-            ],
-        )
-        .env_remove("RUST_LOG") // disable tracing
-        .stderr_to_stdout()
-        .reader()
-        .unwrap();
-
-        // Read the ticket from the listener's output.
-        let header = read_ascii_lines(4, &mut listen_unix_handle).unwrap();
-        let header = String::from_utf8(header).unwrap();
-        let ticket = header.split_ascii_whitespace().last().unwrap();
-        let ticket = NodeTicket::from_str(ticket).unwrap();
-
-        // Poke the listen-unix process with a connect command, retrying on failure.
-        let mut connect_output = None;
-        for _ in 0..10 {
-            let connect_cmd = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
-                .env_remove("RUST_LOG") // disable tracing
-                .stdin_bytes(b"hello from connect")
-                .stdout_capture()
-                .stderr_capture()
-                .unchecked();
-
-            if let Ok(c) = connect_cmd.run() {
-                if c.status.success() {
-                    connect_output = Some(c);
-                    break;
-                }
-            }
-            // If it failed, wait a bit before retrying.
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        let connect = connect_output.expect("failed to connect within the retry loop");
-
-        assert!(connect.status.success());
-        assert_eq!(&connect.stdout, b"hello from unix");
-
-        // Explicitly kill the listener process to ensure cleanup.
-        listen_unix_handle.kill().ok();
-        // The server thread will die when the main test process exits.
-        drop(server_thread);
-    }
-
-    #[test]
-    fn connect_unix_happy() {
-        let (_temp_dir, socket_path) = temp_socket_path();
-        let b1 = wait2();
-        let b2 = b1.clone();
-        let socket_path_clone = socket_path.clone();
-
-        // Start a dumbpipe listen process in background
-        let listen_thread = std::thread::spawn(move || {
-            let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
-                .env_remove("RUST_LOG")
-                .stdin_bytes(b"hello from magic")
-                .stderr_to_stdout()
-                .reader()
-                .unwrap();
-
-            // Parse ticket from header
-            let header = read_ascii_lines(3, &mut listen).unwrap();
-            let header = String::from_utf8(header).unwrap();
-            let ticket = header.split_ascii_whitespace().last().unwrap();
-
-            b1.wait(); // Signal that ticket is ready
-
-            // Start connect-unix process
-            let _connect_unix = duct::cmd(
-                dumbpipe_bin(),
-                [
-                    "connect-unix",
-                    "--socket-path",
-                    socket_path_clone.to_str().unwrap(),
-                    ticket,
-                ],
-            )
+                backend_sock.to_str().unwrap(),
+            ])
             .env_remove("RUST_LOG")
-            .start()
-            .unwrap();
+            .stdout(std::process::Stdio::null()) // We don't need stdout
+            .stderr(std::process::Stdio::piped()) // We must read stderr
+            .spawn()
+            .expect("spawn listen-unix");
 
-            std::thread::sleep(Duration::from_secs(2));
+        // Extract the ticket from the stderr output.
+        let listen_stderr = listen_proc.stderr.take().unwrap();
+        let mut ticket = String::new();
+        let mut stderr_reader = std::io::BufReader::new(listen_stderr);
+        for line in stderr_reader.by_ref().lines() {
+            let line = line.unwrap();
+            eprintln!("[listen-unix-stderr] {line}");
+            if line.contains("connect-unix") {
+                ticket = line.split_whitespace().last().unwrap().to_owned();
+                break;
+            }
+        }
+        assert!(!ticket.is_empty(), "Failed to get ticket");
+
+        // Continue draining listen-unix stderr using helper
+        let listen_stderr_thread = std::thread::spawn(move || {
+            for line in stderr_reader.lines().map_while(Result::ok) {
+                eprintln!("[listen-unix-stderr] {line}");
+            }
         });
 
-        // Wait for ticket to be ready
-        b2.wait();
+        // Launch connect-unix, exposing the client socket.
+        let mut connect_proc = std::process::Command::new(dumbpipe_bin())
+            .args([
+                "connect-unix",
+                "--socket-path",
+                client_sock.to_str().unwrap(),
+                &ticket,
+            ])
+            .env_remove("RUST_LOG")
+            .stdout(std::process::Stdio::null()) // We don't need stdout
+            .stderr(std::process::Stdio::piped()) // We must read stderr
+            .spawn()
+            .expect("spawn connect-unix");
 
-        // Give connect-unix time to set up Unix socket
-        std::thread::sleep(Duration::from_millis(500));
+        // Drain the stderr of the connect process using helper
+        let connect_stderr = connect_proc.stderr.take().unwrap();
+        let connect_stderr_thread = drain_stderr(connect_stderr, "connect-unix-stderr");
 
-        // Connect to Unix socket and test data flow
-        let mut unix_stream = std::os::unix::net::UnixStream::connect(&socket_path).unwrap();
-        std::io::Write::write_all(&mut unix_stream, b"hello from unix").unwrap();
-        std::io::Write::flush(&mut unix_stream).unwrap();
+        // Wait for connect-unix to create its socket.
+        wait_for_path(&client_sock, Duration::from_secs(5));
 
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut unix_stream, &mut buf).unwrap();
-        assert_eq!(&buf, b"hello from magic");
+        // Perform the end-to-end exchange.
+        let mut client = UnixStream::connect(&client_sock).expect("connect to client socket");
+        client
+            .write_all(b"hello from client")
+            .expect("client write");
 
-        listen_thread.join().unwrap();
+        // Don't shutdown write immediately - let the backend respond first
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).expect("client read");
+        assert_eq!(&reply, b"hello from unix");
+
+        // Clean up child processes.
+        listen_proc.kill().ok();
+        listen_proc.wait().ok();
+        connect_proc.kill().ok();
+        connect_proc.wait().ok();
+        listen_stderr_thread.join().ok();
+        connect_stderr_thread.join().ok();
     }
 }
