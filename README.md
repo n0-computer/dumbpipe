@@ -83,6 +83,8 @@ You can forward applications that communicate over Unix sockets, like the termin
 
 Note: Zellij keeps its session sockets under `$ZELLIJ_SOCKET_DIR/<VERSION>/session-name`
 
+![image](https://github.com/user-attachments/assets/b8fbb988-57db-40cd-95e2-208e01fbaad6)
+
 1. On the remote host (with Zellij running):
 
 ```bash
