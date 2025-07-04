@@ -81,23 +81,39 @@ You can now browse the website on port 3001.
 
 You can forward applications that communicate over Unix sockets, like the terminal multiplexer [Zellij](https://zellij.dev/).
 
-1.  **On the remote host (with Zellij running):**
-    ```bash
-    # Forward the remote Zellij socket
-    dumbpipe listen-unix --socket-path /path/to/remote/zellij.sock
-    ```
-    This will give you a `<ticket>`.
+Note: Zellij keeps its session sockets under `$ZELLIJ_SOCKET_DIR/<VERSION>/session-name`
 
-2.  **On your local machine:**
-    ```bash
-    # Create a local socket connected to the remote one
-    dumbpipe connect-unix --socket-path /tmp/remote-zellij.sock <ticket>
-    ```
+1. On the remote host (with Zellij running):
 
-3.  **Attach your local Zellij client:**
-    ```bash
-    zellij attach --server /tmp/remote-zellij.sock
-    ```
+```bash
+zellij --version
+# zellij 0.42.2
+# Forward the remote Zellij socket
+# Socket path follows pattern: /tmp/zellij-0/<VERSION>/<session-name>
+dumbpipe listen-unix --socket-path /tmp/zellij-0/0.42.2/remote-task-1234
+```
+
+This will give you a `<ticket>`.
+
+2. On your local machine:
+
+```bash
+zellij --version
+# zellij 0.42.1
+
+# Create the local socket directory structure
+mkdir -p /tmp/zj-remote/0.42.1
+
+# Create a local socket connected to the remote one
+dumbpipe connect-unix --socket-path /tmp/zj-remote/0.42.1/remote-task-1234 <ticket>
+```
+
+3. Attach your local Zellij client:
+
+```bash
+# In a new terminal window/tab, set the socket directory and attach
+ZELLIJ_SOCKET_DIR=/tmp/zj-remote zellij attach remote-task-1234
+```
 
 # Advanced features
 
