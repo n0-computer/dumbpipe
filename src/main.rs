@@ -1,18 +1,24 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey, Watcher};
-use n0_snafu::{Result, ResultExt};
+use iroh::{
+    endpoint::{Connecting, Connection},
+    Endpoint, NodeAddr, NodeId, SecretKey, Watcher,
+};
+use n0_snafu::{format_err, Result, ResultExt};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 /// Create a dumb pipe between two machines, using an iroh magicsocket.
 ///
@@ -122,19 +128,40 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
     })
 }
 
+/// Arguments shared among commands accepting connections.
+#[derive(Parser, Debug)]
+pub struct CommonAcceptArgs {
+    /// Optionally limit access to node ids listed in this file.
+    #[clap(short = 'a', long)]
+    pub authorized_keys: Option<PathBuf>,
+}
+
+impl CommonAcceptArgs {
+    async fn authorized_keys(&self) -> Result<Option<AuthorizedKeys>> {
+        if let Some(ref path) = self.authorized_keys {
+            Ok(Some(AuthorizedKeys::load(path).await?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 pub struct ListenArgs {
     #[clap(flatten)]
     pub common: CommonArgs,
+    #[clap(flatten)]
+    pub accept: CommonAcceptArgs,
 }
 
 #[derive(Parser, Debug)]
 pub struct ListenTcpArgs {
     #[clap(long)]
     pub host: String,
-
     #[clap(flatten)]
     pub common: CommonArgs,
+    #[clap(flatten)]
+    pub accept: CommonAcceptArgs,
 }
 
 #[derive(Parser, Debug)]
@@ -267,6 +294,7 @@ async fn forward_bidi(
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
+    let authorized_keys = args.accept.authorized_keys().await?;
     let mut builder = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key);
@@ -277,6 +305,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await?;
+    eprintln!("endpoint bound with node id {}", endpoint.node_id());
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.home_relay().initialized().await?;
     let node = endpoint.node_addr().initialized().await?;
@@ -306,7 +335,12 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             }
         };
         let remote_node_id = &connection.remote_node_id()?;
-        tracing::info!("got connection from {}", remote_node_id);
+        info!("got connection from {}", remote_node_id);
+        if let Some(ref authorized_keys) = authorized_keys {
+            if authorized_keys.authorize(&connection).is_err() {
+                continue;
+            }
+        }
         let (s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
             Err(cause) => {
@@ -315,14 +349,14 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        info!("accepted bidi stream from {}", remote_node_id);
         if !args.common.is_custom_alpn() {
             // read the handshake and verify it
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
             r.read_exact(&mut buf).await.e()?;
             snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
-        tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
+        info!("forwarding stdin/stdout to {}", remote_node_id);
         forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
         // stop accepting connections after the first successful one
         break;
@@ -341,23 +375,24 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await?;
+    eprintln!("endpoint bound with node id {}", endpoint.node_id());
     let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
     let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await?;
-    tracing::info!("connected to {}", remote_node_id);
+    info!("connected to {}", remote_node_id);
     // open a bidi stream, try only once
-    let (mut s, r) = connection.open_bi().await.e()?;
-    tracing::info!("opened bidi stream to {}", remote_node_id);
+    let (mut send, recv) = connection.open_bi().await.e()?;
+    info!("opened bidi stream to {}", remote_node_id);
     // send the handshake unless we are using a custom alpn
     // when using a custom alpn, evertyhing is up to the user
     if !args.common.is_custom_alpn() {
         // the connecting side must write first. we don't know if there will be something
         // on stdin, so just write a handshake.
-        s.write_all(&dumbpipe::HANDSHAKE).await.e()?;
+        send.write_all(&dumbpipe::HANDSHAKE).await.e()?;
     }
-    tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
-    forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+    info!("forwarding stdin/stdout to {}", remote_node_id);
+    forward_bidi(tokio::io::stdin(), tokio::io::stdout(), recv, send).await?;
     tokio::io::stdout().flush().await.e()?;
     Ok(())
 }
@@ -377,14 +412,12 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await.context("unable to bind magicsock")?;
-    tracing::info!("tcp listening on {:?}", addrs);
-    let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
-        Ok(tcp_listener) => tcp_listener,
-        Err(cause) => {
-            tracing::error!("error binding tcp socket to {:?}: {}", addrs, cause);
-            return Ok(());
-        }
-    };
+    eprintln!("endpoint bound with node id {}", endpoint.node_id());
+    let tcp_listener = tokio::net::TcpListener::bind(addrs.as_slice())
+        .await
+        .with_context(|| format!("error binding tcp socket to {:?}", addrs.as_slice()))?;
+    info!("tcp listening on {:?}", addrs.as_slice());
+
     async fn handle_tcp_accept(
         next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
         addr: NodeAddr,
@@ -394,7 +427,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     ) -> Result<()> {
         let (tcp_stream, tcp_addr) = next.context("error accepting tcp connection")?;
         let (tcp_recv, tcp_send) = tcp_stream.into_split();
-        tracing::info!("got tcp connection from {}", tcp_addr);
+        info!("got tcp connection from {}", tcp_addr);
         let remote_node_id = addr.node_id;
         let connection = endpoint
             .connect(addr, alpn)
@@ -412,8 +445,9 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             magic_send.write_all(&dumbpipe::HANDSHAKE).await.e()?;
         }
         forward_bidi(tcp_recv, tcp_send, magic_recv, magic_send).await?;
-        Ok::<_, n0_snafu::Error>(())
+        Ok(())
     }
+
     let addr = args.ticket.node_addr();
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
@@ -433,7 +467,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
-                tracing::warn!("error handling connection: {}", cause);
+                tracing::warn!("error handling connection: {:#}", cause);
             }
         });
     }
@@ -447,6 +481,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Err(e) => snafu::whatever!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
+    let authorized_keys = args.accept.authorized_keys().await?;
     let mut builder = Endpoint::builder()
         .alpns(vec![args.common.alpn()?])
         .secret_key(secret_key);
@@ -457,6 +492,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await?;
+    eprintln!("endpoint bound with node id {}", endpoint.node_id());
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.home_relay().initialized().await?;
     let node_addr = endpoint.node_addr().initialized().await?;
@@ -464,6 +500,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
     let short = NodeTicket::new(short);
+    println!("ticket {short:?}");
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -474,23 +511,27 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     if args.common.verbose > 0 {
         eprintln!("or:\ndumbpipe connect-tcp {short}");
     }
-    tracing::info!("node id is {}", ticket.node_addr().node_id);
-    tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
+    info!("node id is {}", ticket.node_addr().node_id);
+    info!("derp url is {:?}", ticket.node_addr().relay_url);
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(
         connecting: Connecting,
         addrs: Vec<std::net::SocketAddr>,
         handshake: bool,
+        authorized_keys: Option<AuthorizedKeys>,
     ) -> Result<()> {
         let connection = connecting.await.context("error accepting connection")?;
         let remote_node_id = &connection.remote_node_id()?;
-        tracing::info!("got connection from {}", remote_node_id);
+        info!("got connection from {}", remote_node_id);
+        if let Some(ref authorized_keys) = authorized_keys {
+            authorized_keys.authorize(&connection)?;
+        }
         let (s, mut r) = connection
             .accept_bi()
             .await
             .context("error accepting stream")?;
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        info!("accepted bidi stream from {}", remote_node_id);
         if handshake {
             // read the handshake and verify it
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
@@ -521,8 +562,11 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         };
         let addrs = addrs.clone();
         let handshake = !args.common.is_custom_alpn();
+        let authorized_keys = authorized_keys.clone();
         tokio::spawn(async move {
-            if let Err(cause) = handle_magic_accept(connecting, addrs, handshake).await {
+            if let Err(cause) =
+                handle_magic_accept(connecting, addrs, handshake, authorized_keys).await
+            {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -531,6 +575,42 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct AuthorizedKeys(Arc<Vec<NodeId>>);
+
+impl AuthorizedKeys {
+    async fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let keys: Result<Vec<NodeId>> = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("failed to read authorized keys file at {}", path.display()))?
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|str| !str.starts_with('#'))
+            .map(|str| {
+                NodeId::from_str(str).with_context(|| {
+                    format!("failed to parse node id `{str}` from authorized keys file")
+                })
+            })
+            .collect();
+        Ok(Self(Arc::new(keys?)))
+    }
+
+    fn authorize(&self, connection: &Connection) -> Result<()> {
+        let remote = connection.remote_node_id()?;
+        if !self.0.contains(&remote) {
+            connection.close(403u32.into(), b"unauthorized");
+            info!(
+                remote = %remote.fmt_short(),
+                "rejecting connection: unauthorized",
+            );
+            Err(format_err!("connection rejected: unauthorized"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[tokio::main]
