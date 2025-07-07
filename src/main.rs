@@ -519,7 +519,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         eprintln!("or:\ndumbpipe connect-tcp {short}");
     }
     info!("node id is {}", ticket.node_addr().node_id);
-    info!("derp url is {:?}", ticket.node_addr().relay_url);
+    info!("relay url is {:?}", ticket.node_addr().relay_url);
 
     // handle a new incoming connection on the magic endpoint
     async fn handle_magic_accept(
