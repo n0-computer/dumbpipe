@@ -132,7 +132,14 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
 #[derive(Parser, Debug)]
 pub struct CommonAcceptArgs {
     /// Optionally limit access to node ids listed in this file.
-    #[clap(short = 'a', long)]
+    ///
+    /// When set, only node ids listed in the file will be allowed to connect.
+    /// Other connections will be rejected.
+    ///
+    /// The file must contain one hex-encoded node id per line. The node id may be followed
+    /// by a comment, separated with a space. Lines starting with `#` are ignored and may
+    /// be used as comments.
+    #[clap(short = 'a', long, value_name = "FILE")]
     pub authorized_keys: Option<PathBuf>,
 }
 
@@ -595,7 +602,9 @@ impl AuthorizedKeys {
                 })
             })
             .collect();
-        Ok(Self(Arc::new(keys?)))
+        let keys = keys?;
+        info!("authorization is enabled: {} nodes authorized.", keys.len());
+        Ok(Self(Arc::new(keys)))
     }
 
     fn authorize(&self, connection: &Connection) -> Result<()> {
