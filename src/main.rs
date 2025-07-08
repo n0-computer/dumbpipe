@@ -2,7 +2,7 @@
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
-use n0_snafu::{Result, ResultExt};
+use n0_error::{bail_any, ensure_any, AnyError, StdResultExt};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -19,6 +19,8 @@ use {
     std::path::PathBuf,
     tokio::net::{UnixListener, UnixStream},
 };
+
+type Result<T, E = AnyError> = std::result::Result<T, E>;
 
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
@@ -151,7 +153,7 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
     Ok(if let Some(text) = alpn.strip_prefix("utf8:") {
         text.as_bytes().to_vec()
     } else {
-        hex::decode(alpn).e()?
+        hex::decode(alpn).anyerr()?
     })
 }
 
@@ -280,7 +282,7 @@ async fn copy_from_quinn(
 /// Print the secret key to stderr if it was generated, so the user can save it.
 fn get_or_create_secret() -> Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
-        Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
+        Ok(secret) => SecretKey::from_str(&secret).std_context("invalid secret"),
         Err(_) => {
             let key = SecretKey::generate(&mut rand::rng());
             eprintln!(
@@ -305,7 +307,7 @@ async fn create_endpoint(
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
-    let endpoint = builder.bind().await?;
+    let endpoint = builder.bind().await.anyerr()?;
     Ok(endpoint)
 }
 
@@ -343,8 +345,8 @@ async fn forward_bidi(
         token3.cancel();
         io::Result::Ok(())
     });
-    forward_to_stdout.await.e()?.e()?;
-    forward_from_stdin.await.e()?.e()?;
+    forward_to_stdout.await.anyerr()?.anyerr()?;
+    forward_from_stdin.await.anyerr()?.anyerr()?;
     Ok(())
 }
 
@@ -377,7 +379,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        let remote_endpoint_id = &connection.remote_id()?;
+        let remote_endpoint_id = &connection.remote_id().anyerr()?;
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
@@ -391,8 +393,8 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         if !args.common.is_custom_alpn() {
             // read the handshake and verify it
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.e()?;
-            snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            r.read_exact(&mut buf).await.anyerr()?;
+            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
         if args.recv_only {
             tracing::info!(
@@ -416,17 +418,17 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
     // connect to the remote, try only once
-    let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await?;
+    let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await.anyerr()?;
     tracing::info!("connected to {}", remote_endpoint_id);
     // open a bidi stream, try only once
-    let (mut s, r) = connection.open_bi().await.e()?;
+    let (mut s, r) = connection.open_bi().await.anyerr()?;
     tracing::info!("opened bidi stream to {}", remote_endpoint_id);
     // send the handshake unless we are using a custom alpn
     // when using a custom alpn, evertyhing is up to the user
     if !args.common.is_custom_alpn() {
         // the connecting side must write first. we don't know if there will be something
         // on stdin, so just write a handshake.
-        s.write_all(&dumbpipe::HANDSHAKE).await.e()?;
+        s.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
     }
     if args.recv_only {
         tracing::info!(
@@ -438,7 +440,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
         forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
     }
-    tokio::io::stdout().flush().await.e()?;
+    tokio::io::stdout().flush().await.anyerr()?;
     Ok(())
 }
 
@@ -447,11 +449,11 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     let addrs = args
         .addr
         .to_socket_addrs()
-        .context(format!("invalid host string {}", args.addr))?;
+        .std_context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
-        .context("unable to bind endpoint")?;
+        .std_context("unable to bind endpoint")?;
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
@@ -471,27 +473,27 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         handshake: bool,
         alpn: &[u8],
     ) -> Result<()> {
-        let (tcp_stream, tcp_addr) = next.context("error accepting tcp connection")?;
+        let (tcp_stream, tcp_addr) = next.std_context("error accepting tcp connection")?;
         let (tcp_recv, tcp_send) = tcp_stream.into_split();
         tracing::info!("got tcp connection from {}", tcp_addr);
         let remote_endpoint_id = addr.id;
         let connection = endpoint
             .connect(addr, alpn)
             .await
-            .context(format!("error connecting to {remote_endpoint_id}"))?;
+            .std_context(format!("error connecting to {remote_endpoint_id}"))?;
         let (mut endpoint_send, endpoint_recv) = connection
             .open_bi()
             .await
-            .context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
+            .std_context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, evertyhing is up to the user
         if handshake {
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
-            endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.e()?;
+            endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
         }
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
-        Ok::<_, n0_snafu::Error>(())
+        Ok::<_, AnyError>(())
     }
     let addr = args.ticket.endpoint_addr();
     loop {
@@ -523,7 +525,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
 async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let addrs = match args.host.to_socket_addrs() {
         Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(e) => snafu::whatever!("invalid host string {}: {}", args.host, e),
+        Err(e) => bail_any!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
@@ -558,23 +560,23 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         addrs: Vec<std::net::SocketAddr>,
         handshake: bool,
     ) -> Result<()> {
-        let connection = connecting.await.context("error accepting connection")?;
-        let remote_endpoint_id = &connection.remote_id()?;
+        let connection = connecting.await.std_context("error accepting connection")?;
+        let remote_endpoint_id = &connection.remote_id().anyerr()?;
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
             .await
-            .context("error accepting stream")?;
+            .std_context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if handshake {
             // read the handshake and verify it
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.e()?;
-            snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            r.read_exact(&mut buf).await.anyerr()?;
+            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
-            .context(format!("error connecting to {addrs:?}"))?;
+            .std_context(format!("error connecting to {addrs:?}"))?;
         let (read, write) = connection.into_split();
         forward_bidi(read, write, r, s).await?;
         Ok(())
@@ -660,26 +662,26 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         handshake: bool,
     ) -> Result<()> {
         tracing::trace!("accepting connection");
-        let connection = connecting.await.context("error accepting connection")?;
-        let remote_endpoint_id = &connection.remote_id()?;
+        let connection = connecting.await.std_context("error accepting connection")?;
+        let remote_endpoint_id = &connection.remote_id().anyerr()?;
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
             .await
-            .context("error accepting stream")?;
+            .std_context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if handshake {
             // read the handshake and verify it
             tracing::trace!("reading handshake");
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.e()?;
-            snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            r.read_exact(&mut buf).await.anyerr()?;
+            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
             tracing::trace!("handshake verified");
         }
         tracing::trace!("connecting to backend socket {:?}", socket_path);
         let connection = UnixStream::connect(&socket_path)
             .await
-            .context(format!("error connecting to {socket_path:?}"))?;
+            .std_context(format!("error connecting to {socket_path:?}"))?;
         tracing::trace!("connected to backend socket");
         let (read, write) = connection.into_split();
         tracing::trace!("starting forward_bidi");
@@ -740,7 +742,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
-        .context("unable to bind endpoint")?;
+        .std_context("unable to bind endpoint")?;
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
@@ -749,7 +751,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
         if e.kind() != io::ErrorKind::NotFound {
-            snafu::whatever!("failed to remove existing socket file: {}", e);
+            bail_any!("failed to remove existing socket file: {}", e);
         }
     }
 
@@ -758,11 +760,11 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let connection = endpoint
         .connect(addr.clone(), &args.common.alpn()?)
         .await
-        .context("failed to connect to remote endpoint")?;
+        .std_context("failed to connect to remote endpoint")?;
     tracing::info!("connected to remote endpoint successfully");
 
     let unix_listener = UnixListener::bind(&socket_path)
-        .with_context(|| format!("failed to bind Unix socket at {socket_path:?}"))?;
+        .with_std_context(|_| format!("failed to bind Unix socket at {socket_path:?}"))?;
     tracing::info!("bound local unix socket: {:?}", socket_path);
 
     let _guard = UnixSocketGuard {
@@ -775,7 +777,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         handshake: bool,
     ) -> Result<()> {
         tracing::trace!("handling new local connection");
-        let (unix_stream, unix_addr) = next.context("error accepting unix connection")?;
+        let (unix_stream, unix_addr) = next.std_context("error accepting unix connection")?;
         let (unix_recv, unix_send) = unix_stream.into_split();
         tracing::trace!("got unix connection from {:?}", unix_addr);
 
@@ -783,7 +785,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         let (mut endpoint_send, endpoint_recv) = connection
             .open_bi()
             .await
-            .context("error opening bidi stream")?;
+            .std_context("error opening bidi stream")?;
         tracing::trace!("bidi stream opened");
 
         // send the handshake unless we are using a custom alpn
@@ -792,7 +794,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
             tracing::trace!("sending handshake");
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
-            endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.e()?;
+            endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
             tracing::trace!("handshake sent");
         }
 
