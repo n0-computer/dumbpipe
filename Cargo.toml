@@ -31,6 +31,7 @@ n0-snafu = "0.2.1"
 [dev-dependencies]
 duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
+tempfile = "3.8"
 
 [patch.crates-io]
 iroh = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
