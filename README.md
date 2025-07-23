@@ -42,6 +42,24 @@ dumbpipe connect nodeealvvv4nwa522qhznqrblv6jxcrgnvpapvakxw5i6mwltmm6ps2r4aicama
 - Adjust the ffmpeg options according to your local platform and video capture devices.
 - Use ticket from sender side
 
+## Share a shell for pair- or ensemble programming with [tty-share](https://github.com/elisescu/tty-share):
+
+Sharing a terminal session over the internet is useful for collaboration between programmers, but the public [tty-share](https://github.com/elisescu/tty-share) server isn't very reliable and, more importantly, [it is not end-to-end encrypted](https://tty-share.com/how-it-works/#end-to-end-encryption).
+
+On the server:
+
+```
+$ dumbpipe listen-tcp --host localhost:8000 &
+$ tty-share
+```
+
+On the client(s):
+
+```
+$ dumbpipe connect-tcp --addr localhost:8000 <ticket> &
+$ tty-share http://localhost:8000/s/local/
+```
+
 ## Forward development web server
 
 You have a development webserver running on port 3000, and want to share it with
