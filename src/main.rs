@@ -203,6 +203,13 @@ pub struct ConnectArgs {
 ///   - QUIC → UDP
 ///   - UDP → QUIC
 ///
+/// If the `udp` socket is not `connect`ed to a peer, this will learn the peer
+/// address from the first incoming UDP packet and send all QUIC datagrams to that
+/// peer. This is the mode used by `connect-udp`.
+///
+/// If the `udp` socket is `connect`ed, it will use `send` to send to the
+/// connected peer. This is the mode used by `listen-udp`.
+///
 /// Both directions are cancelled when either task finishes or on ctrl-c.
 async fn forward_udp_bidi(
     conn: iroh::endpoint::Connection,
@@ -210,18 +217,41 @@ async fn forward_udp_bidi(
 ) -> Result<()> {
     let token = CancellationToken::new();
     let udp = std::sync::Arc::new(udp);
+    // The remote peer for an unconnected UDP socket.
+    // This is the address of the local application that sends us packets.
+    // It is None until the first packet is received.
+    let remote_udp_peer = std::sync::Arc::new(tokio::sync::Mutex::new(None::<SocketAddr>));
+    let is_connected_udp = udp.peer_addr().is_ok();
 
     // QUIC -> UDP
     let t1 = tokio::spawn({
         let conn = conn.clone();
         let udp = udp.clone();
         let token = token.clone();
+        let remote_udp_peer = remote_udp_peer.clone();
         async move {
             loop {
                 tokio::select! {
                     res = conn.read_datagram() => {
                         let pkt = res.context("read_datagram")?;
-                        udp.send(&pkt).await.context("send udp")?;
+                        if is_connected_udp {
+                            // The UDP socket is 'connected', we can use send.
+                            // This is the `listen-udp` case.
+                            udp.send(&pkt).await.context("send udp")?;
+                        } else {
+                            // The UDP socket is not 'connected', we must use send_to.
+                            // This is the `connect-udp` case.
+                            // We need to have a destination address, which we learn
+                            // from the first incoming packet in the other task.
+                            if let Some(peer) = *remote_udp_peer.lock().await {
+                                udp.send_to(&pkt, peer).await.context("send_to udp")?;
+                            } else {
+                                // We have received a packet from QUIC, but we don't know
+                                // where to send it on the local UDP network yet.
+                                // So we just drop it.
+                                tracing::trace!("dropping datagram from quic, no udp peer yet");
+                            }
+                        }
                     }
                     _ = token.cancelled() => break,
                 }
@@ -234,12 +264,25 @@ async fn forward_udp_bidi(
     let t2 = tokio::spawn({
         let udp = udp.clone();
         let token = token.clone();
+        // remote_udp_peer is moved into this closure
         async move {
             let mut buf = vec![0u8; 65536];
             loop {
                 tokio::select! {
                     res = udp.recv_from(&mut buf) => {
-                        let (len, _src) = res.context("recv udp")?;
+                        let (len, src) = res.context("recv udp")?;
+                        if !is_connected_udp {
+                            // This is the `connect-udp` case. We are acting as a server
+                            // for a local application. The first packet we receive
+                            // tells us the address of the client. We'll send all
+                            // subsequent packets from QUIC back to this address.
+                            let mut peer = remote_udp_peer.lock().await;
+                            if peer.is_none() {
+                                tracing::info!("established udp session with {}", src);
+                                *peer = Some(src);
+                            }
+                        }
+                        // Forward the packet to the QUIC connection.
                         conn.send_datagram(Bytes::copy_from_slice(&buf[..len]))
                             .context("send_datagram")?;
                     }
@@ -756,7 +799,11 @@ async fn connect_udp(args: ConnectUdpArgs) -> Result<()> {
     let udp = tokio::net::UdpSocket::bind(addrs.as_slice())
         .await
         .context("bind udp socket")?;
-    tracing::info!("udp listening on {:?}", addrs);
+    // This is the fix: get the actual local address and print it for the user.
+    // This is important if the user specifies port 0 to get a random free port.
+    let local_addr = udp.local_addr().context("failed to get local udp address")?;
+    eprintln!("UDP listening on {}", local_addr);
+    tracing::info!("UDP listening on {}", local_addr);
 
     let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
