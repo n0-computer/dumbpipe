@@ -97,6 +97,24 @@ You can now browse the website on port 3001.
 
 # Advanced features
 
+## Limiting access
+
+You can limit access to a dumbpipe listener through a keys file, similar to the `authorized_keys` file that SSH uses.
+You can put the file wherever you want, e.g. at `~/.dumbpipe/authorized_keys`. For the file to be used, and thus
+access to be limited, specify the file path with the `--authorized-keys` (or `-a`) when launching dumbpipe.
+When authorization is set, only connections from nodes listed in the file will be accepted.
+
+Here's an example file:
+```
+# dumbpipe authorized nodes
+148449487b53bb90382927634114457ef90d2a63127200fd8816a8dffb9d48c6 some-server
+3827f5124d03d10f2f344d319a88c64c198c4db1335560ea6aad41ce2fb7c311 devbox
+```
+
+The file must contain a list of hex-encoded node ids, seperated by newlines.
+The node ids may be followed by a comment, separated by a space from the encoded node id.
+Lines starting with `#` are ignored and can be used as comments.
+
 ## Custom ALPNs
 
 Dumbpipe has an expert feature to specify a custom [ALPN](https://en.wikipedia.org/wiki/Application-Layer_Protocol_Negotiation) string. You can use it to interact with
