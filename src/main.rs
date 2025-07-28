@@ -124,6 +124,10 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
 
 #[derive(Parser, Debug)]
 pub struct ListenArgs {
+    /// Immediately close our sending side, indicating that we will not transmit any data
+    #[clap(long)]
+    pub recv_only: bool,
+
     #[clap(flatten)]
     pub common: CommonArgs,
 }
@@ -156,6 +160,10 @@ pub struct ConnectTcpArgs {
 pub struct ConnectArgs {
     /// The node to connect to
     pub ticket: NodeTicket,
+
+    /// Immediately close our sending side, indicating that we will not transmit any data
+    #[clap(long)]
+    pub recv_only: bool,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -323,7 +331,11 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
         tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
-        forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+        if args.recv_only {
+            forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
+        } else {
+            forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+        }
         // stop accepting connections after the first successful one
         break;
     }
@@ -357,7 +369,11 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         s.write_all(&dumbpipe::HANDSHAKE).await.e()?;
     }
     tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
-    forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+    if args.recv_only {
+        forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
+    } else {
+        forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+    }
     tokio::io::stdout().flush().await.e()?;
     Ok(())
 }
