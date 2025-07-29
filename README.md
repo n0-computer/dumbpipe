@@ -73,7 +73,7 @@ npm run dev
 
 ### The dumbpipe listener
 
-*Listens* on a magic endpoint and forwards all incoming requests to the dev web
+*Listens* on an endpoint and forwards all incoming requests to the dev web
 server that is listening on localhost on port 3000. Any number of connections can
 flow through a single dumb pipe, but they will be separate local tcp connections.
 
@@ -85,7 +85,7 @@ This command will output a ticket that can be used to connect.
 ### The dumbpipe connector
 
 *Listens* on a tcp interface and port on the local machine. In this case on port 3001.
-Forwards all incoming connections to the magic endpoint given in the ticket.
+Forwards all incoming connections to the endpoint given in the ticket.
 
 ```
 dumbpipe connect-tcp --addr 0.0.0.0:3001 <ticket>
@@ -95,7 +95,59 @@ dumbpipe connect-tcp --addr 0.0.0.0:3001 <ticket>
 
 You can now browse the website on port 3001.
 
+## Forward a Unix Socket Application (e.g., Zellij)
+
+You can forward applications that communicate over Unix sockets, like the terminal multiplexer [Zellij](https://zellij.dev/).
+
+Note: Zellij keeps its session sockets under `$ZELLIJ_SOCKET_DIR/<VERSION>/session-name`
+
+![image](https://github.com/user-attachments/assets/b8fbb988-57db-40cd-95e2-208e01fbaad6)
+
+1. On the remote host (with Zellij running):
+
+```bash
+zellij --version
+# zellij 0.42.2
+# Forward the remote Zellij socket
+# Socket path follows pattern: /tmp/zellij-0/<VERSION>/<session-name>
+dumbpipe listen-unix --socket-path /tmp/zellij-0/0.42.2/remote-task-1234
+```
+
+This will give you a `<ticket>`.
+
+2. On your local machine:
+
+```bash
+zellij --version
+# zellij 0.42.1
+
+# Create the local socket directory structure
+mkdir -p /tmp/zj-remote/0.42.1
+
+# Create a local socket connected to the remote one
+dumbpipe connect-unix --socket-path /tmp/zj-remote/0.42.1/remote-task-1234 <ticket>
+```
+
+3. Attach your local Zellij client:
+
+```bash
+# In a new terminal window/tab, set the socket directory and attach
+ZELLIJ_SOCKET_DIR=/tmp/zj-remote zellij attach remote-task-1234
+```
+
 # Advanced features
+
+## Combining Listeners
+
+You can mix and match listeners. For example, forward from a remote Unix socket to a local TCP port:
+
+```bash
+# Machine A: Listen on a Unix socket
+dumbpipe listen-unix --socket-path /var/run/my-app.sock
+
+# Machine B: Connect to it via a local TCP port
+dumbpipe connect-tcp --addr 127.0.0.1:8080 <ticket>
+```
 
 ## Custom ALPNs
 
