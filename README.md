@@ -12,8 +12,16 @@ works with IP addresses, dumbpipe works with 256 bit node ids and therefore is s
 
 # Installation
 
+With [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html):
+
 ```
 cargo install dumbpipe
+```
+
+If you've installed [Homebrew](https://brew.sh), you can install it using the following command:
+
+```
+brew install dumbpipe
 ```
 
 # Examples
