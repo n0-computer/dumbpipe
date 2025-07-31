@@ -330,10 +330,11 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             r.read_exact(&mut buf).await.e()?;
             snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
-        tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
         if args.recv_only {
+            tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_node_id);
             forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
         } else {
+            tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
             forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
         }
         // stop accepting connections after the first successful one
@@ -368,10 +369,11 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         // on stdin, so just write a handshake.
         s.write_all(&dumbpipe::HANDSHAKE).await.e()?;
     }
-    tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
     if args.recv_only {
+        tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_node_id);
         forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
     } else {
+        tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
         forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
     }
     tokio::io::stdout().flush().await.e()?;
