@@ -1,12 +1,10 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
+use iroh::{endpoint::Connecting, Endpoint, NodeAddr, RelayMode, RelayUrl, SecretKey};
 use n0_snafu::{Result, ResultExt};
 use std::{
-    io,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    str::FromStr,
+    fmt::{Display, Formatter}, io, net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs}, str::FromStr
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -121,7 +119,15 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
-
+    
+    /// The relay URL to use as a home relay,
+    ///
+    /// Can be set to "disabled" to disable relay servers and "custom"
+    /// to configure custom servers. The default is the n0 quickest responding 
+    /// relay if the flag is not set. 
+    #[clap(long, default_value_t = RelayModeOption::Default)]
+    pub relay: RelayModeOption,
+    
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -146,6 +152,49 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
     } else {
         hex::decode(alpn).e()?
     })
+}
+
+/// Available command line options for configuring relays.
+#[derive(Clone, Debug)]
+pub enum RelayModeOption {
+    /// Disables relays altogether.
+    Disabled,
+    /// Uses the default relay servers.
+    Default,
+    /// Uses a single, custom relay server by URL.
+    Custom(RelayUrl),
+}
+
+impl FromStr for RelayModeOption {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "disabled" => Ok(Self::Disabled),
+            "default" => Ok(Self::Default),
+            _ => Ok(Self::Custom(RelayUrl::from_str(s)?)),
+        }
+    }
+}
+
+impl Display for RelayModeOption {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => f.write_str("disabled"),
+            Self::Default => f.write_str("default"),
+            Self::Custom(url) => url.fmt(f),
+        }
+    }
+}
+
+impl From<RelayModeOption> for RelayMode {
+    fn from(value: RelayModeOption) -> Self {
+        match value {
+            RelayModeOption::Disabled => RelayMode::Disabled,
+            RelayModeOption::Default => RelayMode::Default,
+            RelayModeOption::Custom(url) => RelayMode::Custom(url.into()),
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -291,7 +340,10 @@ async fn create_endpoint(
     common: &CommonArgs,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(alpns);
+    let mut builder = Endpoint::builder()
+        .secret_key(secret_key)
+        .alpns(alpns)
+        .relay_mode(common.relay.clone().into());
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr_v4(addr);
     }
