@@ -17,14 +17,14 @@ rust-version = "1.81"
 snafu = "0.8.6"
 clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
-iroh = { version = "0.91", default-features = false }
-iroh-base = { version = "0.91", features = ["ticket"] }
+iroh = { version = "0.92", default-features = false }
+iroh-base = { version = "0.92", features = ["ticket"] }
 quinn = { version = "0.14", package = "iroh-quinn" }
 rand = "0.8.5"
 tokio = { version = "1.34.0", features = ["full"] }
 tokio-util = "0.7.10"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 data-encoding = "2.9.0"
 n0-snafu = "0.2.2"
 
@@ -40,7 +40,3 @@ codegen-units = 1
 lto = true
 debug = "none"
 strip = true
-
-[patch.crates-io]
-iroh = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
-iroh-base = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
