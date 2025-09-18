@@ -26,7 +26,7 @@ tokio-util = "0.7.10"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 data-encoding = "2.9.0"
-n0-snafu = "0.2.1"
+n0-snafu = "0.2.2"
 
 [dev-dependencies]
 duct = "0.13.6"
