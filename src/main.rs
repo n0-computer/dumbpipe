@@ -166,7 +166,7 @@ pub enum RelayModeOption {
 }
 
 impl FromStr for RelayModeOption {
-    type Err = anyhow::Error;
+    type Err = iroh::RelayUrlParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {

@@ -791,7 +791,6 @@ dependencies = [
 name = "dumbpipe"
 version = "0.31.0"
 dependencies = [
- "anyhow",
  "clap",
  "data-encoding",
  "duct",

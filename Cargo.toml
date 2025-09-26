@@ -27,7 +27,6 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 data-encoding = "2.9.0"
 n0-snafu = "0.2.2"
-anyhow = "1.0.100"
 
 [dev-dependencies]
 duct = "0.13.6"
