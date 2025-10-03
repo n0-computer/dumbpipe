@@ -155,7 +155,7 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
 }
 
 /// Available command line options for configuring relays.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RelayModeOption {
     /// Disables relays altogether.
     Disabled,
@@ -397,7 +397,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let node = endpoint.node_addr().initialized().await;
     let mut short = node.clone();
     let ticket = NodeTicket::new(node);
@@ -569,7 +571,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let node_addr = endpoint.node_addr().initialized().await;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -651,7 +655,9 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let node_addr = endpoint.node_addr().initialized().await;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
