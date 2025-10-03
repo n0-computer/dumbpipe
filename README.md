@@ -173,3 +173,38 @@ echo request1.bin | dumbpipe connect <ticket> --custom-alpn utf8:/iroh-bytes/2 >
 
 if request1.bin contained a valid request for the `/iroh-bytes/2` protocol, response1.bin will
 now contain the response.
+
+## Custom Relay Configuration
+
+By default, dumbpipe uses iroh's automatic relay selection, which picks the fastest responding relay server from the n0 network. You can customize this behavior using the `--relay` option:
+
+### Disable relays entirely
+
+If you want to force direct connections only:
+
+```bash
+dumbpipe listen --relay disabled
+dumbpipe connect <ticket> --relay disabled
+```
+
+This will only attempt direct peer-to-peer connections and won't fall back to relay servers.
+
+### Use default relays (default behavior)
+
+```bash
+dumbpipe listen --relay default
+dumbpipe connect <ticket> --relay default
+```
+
+This is the default behavior when no `--relay` option is specified.
+
+### Use a custom relay server
+
+If you're running your own relay server or want to use a specific one:
+
+```bash
+dumbpipe listen --relay https://your-relay-server.com
+dumbpipe connect <ticket> --relay https://your-relay-server.com
+```
+
+**Note**: Both the listener and connector should use the same relay configuration for optimal connectivity.
