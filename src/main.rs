@@ -4,7 +4,10 @@ use dumbpipe::NodeTicket;
 use iroh::{endpoint::Connecting, Endpoint, NodeAddr, RelayMode, RelayUrl, SecretKey};
 use n0_snafu::{Result, ResultExt};
 use std::{
-    fmt::{Display, Formatter}, io, net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs}, str::FromStr
+    fmt::{Display, Formatter},
+    io,
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    str::FromStr,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -119,15 +122,15 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
-    
+
     /// The relay URL to use as a home relay,
     ///
     /// Can be set to "disabled" to disable relay servers and "custom"
-    /// to configure custom servers. The default is the n0 quickest responding 
-    /// relay if the flag is not set. 
+    /// to configure custom servers. The default is the n0 quickest responding
+    /// relay if the flag is not set.
     #[clap(long, default_value_t = RelayModeOption::Default)]
     pub relay: RelayModeOption,
-    
+
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
