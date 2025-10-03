@@ -1,9 +1,10 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey, Watcher};
+use iroh::{endpoint::Connecting, Endpoint, NodeAddr, RelayMode, RelayUrl, SecretKey, Watcher};
 use n0_snafu::{Result, ResultExt};
 use std::{
+    fmt::{Display, Formatter},
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
@@ -122,6 +123,14 @@ pub struct CommonArgs {
     #[clap(long)]
     pub custom_alpn: Option<String>,
 
+    /// The relay URL to use as a home relay,
+    ///
+    /// Can be set to "disabled" to disable relay servers and "custom"
+    /// to configure custom servers. The default is the n0 quickest responding
+    /// relay if the flag is not set.
+    #[clap(long, default_value_t = RelayModeOption::Default)]
+    pub relay: RelayModeOption,
+
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -146,6 +155,49 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
     } else {
         hex::decode(alpn).e()?
     })
+}
+
+/// Available command line options for configuring relays.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RelayModeOption {
+    /// Disables relays altogether.
+    Disabled,
+    /// Uses the default relay servers.
+    Default,
+    /// Uses a single, custom relay server by URL.
+    Custom(RelayUrl),
+}
+
+impl FromStr for RelayModeOption {
+    type Err = iroh::RelayUrlParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "disabled" => Ok(Self::Disabled),
+            "default" => Ok(Self::Default),
+            _ => Ok(Self::Custom(RelayUrl::from_str(s)?)),
+        }
+    }
+}
+
+impl Display for RelayModeOption {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => f.write_str("disabled"),
+            Self::Default => f.write_str("default"),
+            Self::Custom(url) => url.fmt(f),
+        }
+    }
+}
+
+impl From<RelayModeOption> for RelayMode {
+    fn from(value: RelayModeOption) -> Self {
+        match value {
+            RelayModeOption::Disabled => RelayMode::Disabled,
+            RelayModeOption::Default => RelayMode::Default,
+            RelayModeOption::Custom(url) => RelayMode::Custom(url.into()),
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -291,7 +343,10 @@ async fn create_endpoint(
     common: &CommonArgs,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(alpns);
+    let mut builder = Endpoint::builder()
+        .secret_key(secret_key)
+        .alpns(alpns)
+        .relay_mode(common.relay.clone().into());
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr_v4(addr);
     }
@@ -345,7 +400,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let node = endpoint.node_addr().initialized().await;
     let mut short = node.clone();
     let ticket = NodeTicket::new(node);
@@ -444,8 +501,9 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.home_relay().initialized().await;
-
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
         Err(cause) => {
@@ -517,7 +575,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let node_addr = endpoint.node_addr().initialized().await;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -599,7 +659,9 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let node_addr = endpoint.node_addr().initialized().await;
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -714,8 +776,9 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.home_relay().initialized().await;
-
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
         if e.kind() != io::ErrorKind::NotFound {
