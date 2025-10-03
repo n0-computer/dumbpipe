@@ -505,13 +505,16 @@ fn connect_listen_relay_disabled() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = NodeTicket::from_str(ticket).unwrap();
 
-    let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string(), "--relay", "disabled"])
-        .env_remove("RUST_LOG")
-        .stdin_bytes(connect_to_listen)
-        .stderr_null()
-        .stdout_capture()
-        .run()
-        .unwrap();
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        ["connect", &ticket.to_string(), "--relay", "disabled"],
+    )
+    .env_remove("RUST_LOG")
+    .stdin_bytes(connect_to_listen)
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
 
     assert!(connect.status.success());
     assert_eq!(&connect.stdout, listen_to_connect);
@@ -537,13 +540,16 @@ fn connect_listen_relay_default() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = NodeTicket::from_str(ticket).unwrap();
 
-    let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string(), "--relay", "default"])
-        .env_remove("RUST_LOG")
-        .stdin_bytes(connect_to_listen)
-        .stderr_null()
-        .stdout_capture()
-        .run()
-        .unwrap();
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        ["connect", &ticket.to_string(), "--relay", "default"],
+    )
+    .env_remove("RUST_LOG")
+    .stdin_bytes(connect_to_listen)
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
 
     assert!(connect.status.success());
     assert_eq!(&connect.stdout, listen_to_connect);
@@ -560,6 +566,6 @@ fn relay_option_invalid() {
         .stderr_capture()
         .stdout_capture()
         .run();
-    
+
     assert!(output.is_err() || !output.unwrap().status.success());
 }
