@@ -501,8 +501,9 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.home_relay().initialized().await;
-
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
         Err(cause) => {
@@ -775,8 +776,9 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.home_relay().initialized().await;
-
+    if args.common.relay != RelayModeOption::Disabled {
+        endpoint.home_relay().initialized().await;
+    }
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
         if e.kind() != io::ErrorKind::NotFound {
