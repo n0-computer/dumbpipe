@@ -155,7 +155,7 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
 }
 
 /// Available command line options for configuring relays.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RelayModeOption {
     /// Disables relays altogether.
     Disabled,
@@ -351,6 +351,8 @@ async fn create_endpoint(
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await?;
+    endpoint.online().await;
+
     Ok(endpoint)
 }
 
@@ -396,11 +398,10 @@ async fn forward_bidi(
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    // wait for the endpoint to figure out its home relay and addresses before making a ticket
-    endpoint.online().await;
-    let node = endpoint.node_addr();
-    let mut short = node.clone();
-    let ticket = NodeTicket::new(node);
+    // wait for the endpoint to figure out its address before making a ticket
+    let node_addr = endpoint.node_addr();
+    let mut short = node_addr.clone();
+    let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
     let short = NodeTicket::new(short);
 
@@ -457,10 +458,10 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
-    let addr = args.ticket.node_addr();
-    let remote_node_id = addr.node_id;
+    let node_addr = endpoint.node_addr();
+    let remote_node_id = node_addr.node_id;
     // connect to the node, try only once
-    let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await?;
+    let connection = endpoint.connect(node_addr.clone(), &args.common.alpn()?).await?;
     tracing::info!("connected to {}", remote_node_id);
     // open a bidi stream, try only once
     let (mut s, r) = connection.open_bi().await.e()?;
@@ -494,9 +495,6 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .await
         .context("unable to bind endpoint")?;
     tracing::info!("tcp listening on {:?}", addrs);
-
-    // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.online().await;
 
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -534,7 +532,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
         Ok::<_, n0_snafu::Error>(())
     }
-    let addr = args.ticket.node_addr();
+    let node_addr = args.ticket.node_addr();
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
         let next = tokio::select! {
@@ -545,11 +543,11 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             }
         };
         let endpoint = endpoint.clone();
-        let addr = addr.clone();
+        let node_addr = node_addr.clone();
         let handshake = !args.common.is_custom_alpn();
         let alpn = args.common.alpn()?;
         tokio::spawn(async move {
-            if let Err(cause) = handle_tcp_accept(next, addr, endpoint, handshake, &alpn).await {
+            if let Err(cause) = handle_tcp_accept(next, node_addr, endpoint, handshake, &alpn).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -568,8 +566,6 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     };
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    // wait for the endpoint to figure out its address before making a ticket
-    endpoint.online().await;
     let node_addr = endpoint.node_addr();
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -650,8 +646,6 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    // wait for the endpoint to figure out its address before making a ticket
-    endpoint.online().await;
     let node_addr = endpoint.node_addr();
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -765,9 +759,6 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         .context("unable to bind endpoint")?;
     tracing::info!("unix listening on {:?}", socket_path);
 
-    // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.online().await;
-
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
         if e.kind() != io::ErrorKind::NotFound {
@@ -775,10 +766,10 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         }
     }
 
-    let addr = args.ticket.node_addr();
-    tracing::info!("connecting to remote node: {:?}", addr);
+    let node_addr = args.ticket.node_addr();
+    tracing::info!("connecting to remote node: {:?}", node_addr);
     let connection = endpoint
-        .connect(addr.clone(), &args.common.alpn()?)
+        .connect(node_addr.clone(), &args.common.alpn()?)
         .await
         .context("failed to connect to remote node")?;
     tracing::info!("connected to remote node successfully");
