@@ -45,7 +45,7 @@ fn wait2() -> Arc<Barrier> {
 
 /// generate a random, non privileged port
 fn random_port() -> u16 {
-    rand::thread_rng().gen_range(10000u16..60000)
+    rand::rng().random_range(10000u16..60000)
 }
 
 /// Tests the basic functionality of the connect and listen pair

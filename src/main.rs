@@ -1,7 +1,7 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey, Watcher};
+use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
 use n0_snafu::{Result, ResultExt};
 use std::{
     io,
@@ -275,7 +275,7 @@ fn get_or_create_secret() -> Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
-            let key = SecretKey::generate(rand::rngs::OsRng);
+            let key = SecretKey::generate(&mut rand::rng());
             eprintln!(
                 "using secret key {}",
                 data_encoding::HEXLOWER.encode(&key.to_bytes())
@@ -344,9 +344,9 @@ async fn forward_bidi(
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
-    let node = endpoint.node_addr().initialized().await;
+    // wait for the endpoint to figure out its home relay and addresses before making a ticket
+    endpoint.online().await;
+    let node = endpoint.node_addr();
     let mut short = node.clone();
     let ticket = NodeTicket::new(node);
     short.direct_addresses.clear();
@@ -444,7 +444,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.home_relay().initialized().await;
+    endpoint.online().await;
 
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -517,8 +517,8 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
-    let node_addr = endpoint.node_addr().initialized().await;
+    endpoint.online().await;
+    let node_addr = endpoint.node_addr();
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
@@ -599,8 +599,8 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.home_relay().initialized().await;
-    let node_addr = endpoint.node_addr().initialized().await;
+    endpoint.online().await;
+    let node_addr = endpoint.node_addr();
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
@@ -714,7 +714,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.home_relay().initialized().await;
+    endpoint.online().await;
 
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
