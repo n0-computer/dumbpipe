@@ -7,10 +7,12 @@ use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
+    time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
+    time::timeout,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -19,6 +21,8 @@ use {
     std::path::PathBuf,
     tokio::net::{UnixListener, UnixStream},
 };
+
+const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
@@ -345,7 +349,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
-    endpoint.online().await;
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
     let node = endpoint.node_addr();
     let mut short = node.clone();
     let ticket = NodeTicket::new(node);
@@ -444,7 +450,9 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.online().await;
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
 
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -517,7 +525,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.online().await;
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
     let node_addr = endpoint.node_addr();
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -599,7 +609,9 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    endpoint.online().await;
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
     let node_addr = endpoint.node_addr();
     let mut short = node_addr.clone();
     let ticket = NodeTicket::new(node_addr);
@@ -714,7 +726,9 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    endpoint.online().await;
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
 
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
