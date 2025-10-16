@@ -466,7 +466,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
-    let addr = endpoint.node_addr();
+    let addr = args.ticket.node_addr();
     let remote_node_id = addr.node_id;
     // connect to the node, try only once
     let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await?;
