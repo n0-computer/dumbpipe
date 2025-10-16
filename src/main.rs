@@ -356,7 +356,7 @@ async fn create_endpoint(
     let endpoint = builder.bind().await?;
 
     if !(common.relay == RelayModeOption::Disabled) {
-        let _ = tokio::time::timeout(Duration::from_secs(30), async {
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
             endpoint.online().await;
         }).await;
     };
