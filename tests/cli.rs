@@ -19,7 +19,7 @@ fn dumbpipe_bin() -> &'static str {
 ///
 /// This assumes that the header lines are ASCII and can be parsed byte by byte.
 fn read_ascii_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>> {
-    let mut buf = [0u8; 1];
+let mut buf = [0u8; 1];
     let mut res = Vec::new();
     loop {
         if reader.read(&mut buf)? != 1 {

@@ -7,7 +7,7 @@ use std::{
     fmt::{Display, Formatter},
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    str::FromStr,
+    str::FromStr, time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -354,7 +354,12 @@ async fn create_endpoint(
         builder = builder.bind_addr_v6(addr);
     }
     let endpoint = builder.bind().await?;
-    endpoint.online().await;
+
+    let _ = tokio::time::timeout(Duration::from_secs(30), async {
+        if !(common.relay == RelayModeOption::Disabled) {
+            endpoint.online().await;
+        }
+    }).await;
 
     Ok(endpoint)
 }
