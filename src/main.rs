@@ -407,9 +407,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    let addr = endpoint.node_addr();
-    let mut short = addr.clone();
-    let ticket = NodeTicket::new(addr);
+    let node = endpoint.node_addr();
+    let mut short = node.clone();
+    let ticket = NodeTicket::new(node);
     short.direct_addresses.clear();
     let short = NodeTicket::new(short);
 
@@ -551,11 +551,11 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             }
         };
         let endpoint = endpoint.clone();
-        let node_addr = addr.clone();
+        let addr = addr.clone();
         let handshake = !args.common.is_custom_alpn();
         let alpn = args.common.alpn()?;
         tokio::spawn(async move {
-            if let Err(cause) = handle_tcp_accept(next, node_addr, endpoint, handshake, &alpn).await {
+            if let Err(cause) = handle_tcp_accept(next, addr, endpoint, handshake, &alpn).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -574,9 +574,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     };
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    let addr = endpoint.node_addr();
-    let mut short = addr.clone();
-    let ticket = NodeTicket::new(addr);
+    let node_addr = endpoint.node_addr();
+    let mut short = node_addr.clone();
+    let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
     let short = NodeTicket::new(short);
 
@@ -654,9 +654,9 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    let addr = endpoint.node_addr();
-    let mut short = addr.clone();
-    let ticket = NodeTicket::new(addr);
+    let node_addr = endpoint.node_addr();
+    let mut short = node_addr.clone();
+    let ticket = NodeTicket::new(node_addr);
     short.direct_addresses.clear();
     let short = NodeTicket::new(short);
 
