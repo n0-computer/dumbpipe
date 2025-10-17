@@ -488,3 +488,84 @@ mod unix_socket_tests {
         connect_stderr_thread.join().ok();
     }
 }
+
+#[test]
+#[ignore = "flaky"]
+fn connect_listen_relay_disabled() {
+    let listen_to_connect = b"hello from listen";
+    let connect_to_listen = b"hello from connect";
+    let mut listen = duct::cmd(dumbpipe_bin(), ["listen", "--relay", "disabled"])
+        .env_remove("RUST_LOG")
+        .stdin_bytes(listen_to_connect)
+        .stderr_to_stdout()
+        .reader()
+        .unwrap();
+    let header = read_ascii_lines(3, &mut listen).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = NodeTicket::from_str(ticket).unwrap();
+
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        ["connect", &ticket.to_string(), "--relay", "disabled"],
+    )
+    .env_remove("RUST_LOG")
+    .stdin_bytes(connect_to_listen)
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
+
+    assert!(connect.status.success());
+    assert_eq!(&connect.stdout, listen_to_connect);
+
+    let mut listen_stdout = Vec::new();
+    listen.read_to_end(&mut listen_stdout).unwrap();
+    assert_eq!(&listen_stdout, connect_to_listen);
+}
+
+#[test]
+#[ignore = "flaky"]
+fn connect_listen_relay_default() {
+    let listen_to_connect = b"hello from listen";
+    let connect_to_listen = b"hello from connect";
+    let mut listen = duct::cmd(dumbpipe_bin(), ["listen", "--relay", "default"])
+        .env_remove("RUST_LOG")
+        .stdin_bytes(listen_to_connect)
+        .stderr_to_stdout()
+        .reader()
+        .unwrap();
+    let header = read_ascii_lines(3, &mut listen).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = NodeTicket::from_str(ticket).unwrap();
+
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        ["connect", &ticket.to_string(), "--relay", "default"],
+    )
+    .env_remove("RUST_LOG")
+    .stdin_bytes(connect_to_listen)
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
+
+    assert!(connect.status.success());
+    assert_eq!(&connect.stdout, listen_to_connect);
+
+    let mut listen_stdout = Vec::new();
+    listen.read_to_end(&mut listen_stdout).unwrap();
+    assert_eq!(&listen_stdout, connect_to_listen);
+}
+
+#[test]
+fn relay_option_invalid() {
+    let output = duct::cmd(dumbpipe_bin(), ["listen", "--relay", "invalid-relay-url"])
+        .env_remove("RUST_LOG")
+        .stderr_capture()
+        .stdout_capture()
+        .run();
+
+    assert!(output.is_err() || !output.unwrap().status.success());
+}
