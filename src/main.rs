@@ -355,9 +355,10 @@ async fn create_endpoint(
     }
     let endpoint = builder.bind().await?;
 
-    if !(common.relay == RelayModeOption::Disabled) {
-        let _ = tokio::time::timeout(Duration::from_secs(5), endpoint.online()).await;
-    };
+    if !(common.relay == RelayModeOption::Disabled)
+      && tokio::time::timeout(Duration::from_secs(5), endpoint.online()).await.is_err() {
+        eprintln!("Failed to initialize home relay");
+      };
 
     Ok(endpoint)
 }
