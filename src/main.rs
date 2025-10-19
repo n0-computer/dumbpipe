@@ -1,22 +1,27 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
+use hex::FromHexError;
+use iroh::{endpoint::Connecting, Endpoint, KeyParsingError, NodeAddr, SecretKey};
 use n0_snafu::{Result, ResultExt};
+use snafu::Snafu;
 use std::{
+    borrow::Cow,
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
 };
 use tokio::{
+    fs,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::log::{debug, error};
 
 #[cfg(unix)]
 use {
-    std::path::PathBuf,
+    std::path::{Path, PathBuf},
     tokio::net::{UnixListener, UnixStream},
 };
 
@@ -121,6 +126,13 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
+
+    /// Use a persistent node key pair
+    #[arg(long)]
+    persist: bool,
+    /// Write and read the node keys at the given location
+    #[arg(long)]
+    persist_at: Option<PathBuf>,
 
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
@@ -298,8 +310,141 @@ async fn create_endpoint(
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
+    if common.persist || common.persist_at.is_some() {
+        builder = builder.secret_key(get_secret_key(common.persist_at.as_ref()).await);
+    }
     let endpoint = builder.bind().await?;
     Ok(endpoint)
+}
+
+async fn get_secret_key(persist_at: Option<&PathBuf>) -> SecretKey {
+    let persist_at_cow = persist_at
+        .map(Cow::from) // Reference
+        .or_else(|| {
+            std::env::home_dir().map(|mut p| {
+                p.push(".auth");
+                p.push("dumbpipe.key");
+                debug!("Persisting key at: {p:?}");
+                Cow::from(p) // Owned
+            })
+        });
+    let persist_at = persist_at_cow.as_ref().map(Cow::as_ref);
+
+    match read_key(persist_at).await {
+        Ok(Some(result)) => return result,
+        Ok(None) => {}
+        Err(error) => {
+            error!("Error reading persisted dumbpipe key: [{:?}]", error);
+        }
+    }
+
+    let key = SecretKey::generate(&mut rand::rng());
+    if let Some(node_path) = persist_at {
+        if let Err(error) = write_key(node_path, &key).await {
+            error!("Could not persist dumbpipe key: {node_path:?}: {error:?}");
+        }
+    }
+    key
+}
+
+#[derive(Debug, Snafu)]
+#[non_exhaustive]
+pub enum PersistError {
+    #[snafu(transparent)]
+    IOError { source: std::io::Error },
+
+    FileError {
+        source: std::io::Error,
+        file: PathBuf,
+    },
+
+    #[snafu(transparent)]
+    KeyDecodeError { source: KeyDecodeErrorSource },
+}
+
+fn for_file(file: PathBuf) -> impl FnOnce(std::io::Error) -> PersistError {
+    return |e| PersistError::FileError { source: e, file };
+}
+
+#[derive(Debug, Snafu)]
+#[non_exhaustive]
+pub enum KeyDecodeErrorSource {
+    #[snafu(transparent)]
+    Hex {
+        source: FromHexError,
+    },
+
+    #[snafu(transparent)]
+    Parsing {
+        source: iroh::KeyParsingError,
+    },
+
+    InvalidSecretKeySize,
+}
+
+impl From<FromHexError> for PersistError {
+    fn from(source: FromHexError) -> Self {
+        PersistError::KeyDecodeError {
+            source: KeyDecodeErrorSource::Hex { source },
+        }
+    }
+}
+
+impl From<KeyParsingError> for PersistError {
+    fn from(source: KeyParsingError) -> Self {
+        PersistError::KeyDecodeError {
+            source: KeyDecodeErrorSource::Parsing { source },
+        }
+    }
+}
+
+async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>, PersistError> {
+    if let Some(key_path) = key_path_option {
+        if !key_path.exists() {
+            debug!("Secret key not found: {:?}", &key_path);
+            return Ok(None);
+        }
+        let key_base64 = tokio::fs::read_to_string(key_path).await?;
+        let key_base64 = key_base64.trim();
+        let key_bytes = hex::decode(key_base64)?;
+        if key_bytes.len() != 32 {
+            return Err(PersistError::KeyDecodeError {
+                source: KeyDecodeErrorSource::InvalidSecretKeySize,
+            });
+        }
+        let key = SecretKey::try_from(&key_bytes[0..32]).map_err(KeyParsingError::from)?;
+        Ok(Some(key))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn write_key(key_path: &Path, key: &SecretKey) -> Result<(), PersistError> {
+    let mut secret_hex = hex::encode(key.to_bytes());
+    secret_hex.push('\n');
+    let mut open_options = tokio::fs::OpenOptions::new();
+    open_options.mode(0o400); // Read for owner only
+    create_file(open_options, key_path, &secret_hex).await?;
+    Ok(())
+}
+
+async fn create_file(
+    mut open_options: tokio::fs::OpenOptions,
+    file: &Path,
+    content: &str,
+) -> Result<(), PersistError> {
+    let mut parent = file.to_owned();
+    if parent.pop() {
+        fs::create_dir_all(parent.clone())
+            .await
+            .map_err(for_file(parent))?
+    }
+    let mut open_file = open_options.create(true).write(true).open(file).await?;
+    open_file
+        .write_all(content.as_bytes())
+        .await
+        .map_err(for_file(file.to_path_buf()))?;
+    Ok(())
 }
 
 fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
