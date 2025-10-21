@@ -388,7 +388,10 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
         if args.recv_only {
-            tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_endpoint_id);
+            tracing::info!(
+                "forwarding stdout to {} (ignoring stdin)",
+                remote_endpoint_id
+            );
             forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
         } else {
             tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
@@ -419,7 +422,10 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         s.write_all(&dumbpipe::HANDSHAKE).await.e()?;
     }
     if args.recv_only {
-        tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_endpoint_id);
+        tracing::info!(
+            "forwarding stdout to {} (ignoring stdin)",
+            remote_endpoint_id
+        );
         forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
     } else {
         tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
@@ -530,7 +536,14 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         eprintln!("or:\ndumbpipe connect-tcp {short}");
     }
     tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
-    tracing::info!("relay url is {:?}", ticket.endpoint_addr().relay_urls().next().map_or("None".to_string(), |url| url.to_string()));
+    tracing::info!(
+        "relay url is {:?}",
+        ticket
+            .endpoint_addr()
+            .relay_urls()
+            .next()
+            .map_or("None".to_string(), |url| url.to_string())
+    );
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
@@ -624,7 +637,14 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {short}");
     }
     tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
-    tracing::info!("relay url is {:?}", ticket.endpoint_addr().relay_urls().next().map_or("None".to_string(), |url| url.to_string()));
+    tracing::info!(
+        "relay url is {:?}",
+        ticket
+            .endpoint_addr()
+            .relay_urls()
+            .next()
+            .map_or("None".to_string(), |url| url.to_string())
+    );
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
