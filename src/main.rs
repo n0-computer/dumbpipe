@@ -1,7 +1,7 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
-use dumbpipe::NodeTicket;
-use iroh::{endpoint::Connecting, Endpoint, NodeAddr, SecretKey};
+use dumbpipe::EndpointTicket;
+use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
 use n0_snafu::{Result, ResultExt};
 use std::{
     io,
@@ -23,9 +23,9 @@ use {
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
 /// One side listens, the other side connects. Both sides are identified by a
-/// 32 byte node id.
+/// 32 byte endpoint id.
 ///
-/// Connecting to a node id is independent of its IP address. Dumbpipe will try
+/// Connecting to a endpoint id is independent of its IP address. Dumbpipe will try
 /// to establish a direct connection even through NATs and firewalls. If that
 /// fails, it will fall back to using a relay server.
 ///
@@ -45,13 +45,13 @@ pub enum Commands {
     /// Listen on an endpoint and forward stdin/stdout to the first incoming
     /// bidi stream.
     ///
-    /// Will print a node ticket on stderr that can be used to connect.
+    /// Will print a endpoint ticket on stderr that can be used to connect.
     Listen(ListenArgs),
 
     /// Listen on an endpoint and forward incoming connections to the specified
     /// host and port. Every incoming bidi stream is forwarded to a new connection.
     ///
-    /// Will print a node ticket on stderr that can be used to connect.
+    /// Will print a endpoint ticket on stderr that can be used to connect.
     ///
     /// As far as the endpoint is concerned, this is listening. But it is
     /// connecting to a TCP socket for which you have to specify the host and port.
@@ -59,13 +59,13 @@ pub enum Commands {
 
     /// Connect to an endpoint, open a bidi stream, and forward stdin/stdout.
     ///
-    /// A node ticket is required to connect.
+    /// A endpoint ticket is required to connect.
     Connect(ConnectArgs),
 
     /// Connect to an endpoint, open a bidi stream, and forward stdin/stdout
     /// to it.
     ///
-    /// A node ticket is required to connect.
+    /// A endpoint ticket is required to connect.
     ///
     /// As far as the endpoint is concerned, this is connecting. But it is
     /// listening on a TCP socket for which you have to specify the interface and port.
@@ -75,7 +75,7 @@ pub enum Commands {
     /// Listen on an endpoint and forward incoming connections to the specified
     /// Unix socket path. Every incoming bidi stream is forwarded to a new connection.
     ///
-    /// Will print a node ticket on stderr that can be used to connect.
+    /// Will print a endpoint ticket on stderr that can be used to connect.
     ///
     /// As far as the endpoint is concerned, this is listening. But it is
     /// connecting to a Unix socket for which you have to specify the path.
@@ -85,7 +85,7 @@ pub enum Commands {
     /// Connect to an endpoint, open a bidi stream, and forward connections
     /// from the specified Unix socket path.
     ///
-    /// A node ticket is required to connect.
+    /// A endpoint ticket is required to connect.
     ///
     /// As far as the endpoint is concerned, this is connecting. But it is
     /// listening on a Unix socket for which you have to specify the path.
@@ -175,8 +175,8 @@ pub struct ConnectTcpArgs {
     #[clap(long)]
     pub addr: String,
 
-    /// The node to connect to
-    pub ticket: NodeTicket,
+    /// The endpoint to connect to
+    pub ticket: EndpointTicket,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -184,8 +184,8 @@ pub struct ConnectTcpArgs {
 
 #[derive(Parser, Debug)]
 pub struct ConnectArgs {
-    /// The node to connect to
-    pub ticket: NodeTicket,
+    /// The endpoint to connect to
+    pub ticket: EndpointTicket,
 
     /// Immediately close our sending side, indicating that we will not transmit any data
     #[clap(long)]
@@ -213,8 +213,8 @@ pub struct ConnectUnixArgs {
     #[clap(long)]
     pub socket_path: PathBuf,
 
-    /// The node to connect to
-    pub ticket: NodeTicket,
+    /// The endpoint to connect to
+    pub ticket: EndpointTicket,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -346,11 +346,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
     endpoint.online().await;
-    let node = endpoint.node_addr();
-    let mut short = node.clone();
-    let ticket = NodeTicket::new(node);
-    short.direct_addresses.clear();
-    let short = NodeTicket::new(short);
+    let addr = endpoint.addr();
+    let short = create_short_ticket(&addr);
+    let ticket = EndpointTicket::new(addr);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -372,8 +370,8 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        let remote_node_id = &connection.remote_node_id()?;
-        tracing::info!("got connection from {}", remote_node_id);
+        let remote_endpoint_id = &connection.remote_id()?;
+        tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
             Err(cause) => {
@@ -382,7 +380,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if !args.common.is_custom_alpn() {
             // read the handshake and verify it
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
@@ -390,10 +388,10 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             snafu::ensure_whatever!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
         }
         if args.recv_only {
-            tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_node_id);
+            tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_endpoint_id);
             forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
         } else {
-            tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
+            tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
             forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
         }
         // stop accepting connections after the first successful one
@@ -405,14 +403,14 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
-    let addr = args.ticket.node_addr();
-    let remote_node_id = addr.node_id;
-    // connect to the node, try only once
+    let addr = args.ticket.endpoint_addr();
+    let remote_endpoint_id = addr.id;
+    // connect to the remote, try only once
     let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await?;
-    tracing::info!("connected to {}", remote_node_id);
+    tracing::info!("connected to {}", remote_endpoint_id);
     // open a bidi stream, try only once
     let (mut s, r) = connection.open_bi().await.e()?;
-    tracing::info!("opened bidi stream to {}", remote_node_id);
+    tracing::info!("opened bidi stream to {}", remote_endpoint_id);
     // send the handshake unless we are using a custom alpn
     // when using a custom alpn, evertyhing is up to the user
     if !args.common.is_custom_alpn() {
@@ -421,10 +419,10 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         s.write_all(&dumbpipe::HANDSHAKE).await.e()?;
     }
     if args.recv_only {
-        tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_node_id);
+        tracing::info!("forwarding stdout to {} (ignoring stdin)", remote_endpoint_id);
         forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
     } else {
-        tracing::info!("forwarding stdin/stdout to {}", remote_node_id);
+        tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
         forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
     }
     tokio::io::stdout().flush().await.e()?;
@@ -455,7 +453,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     };
     async fn handle_tcp_accept(
         next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
-        addr: NodeAddr,
+        addr: EndpointAddr,
         endpoint: Endpoint,
         handshake: bool,
         alpn: &[u8],
@@ -463,15 +461,15 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         let (tcp_stream, tcp_addr) = next.context("error accepting tcp connection")?;
         let (tcp_recv, tcp_send) = tcp_stream.into_split();
         tracing::info!("got tcp connection from {}", tcp_addr);
-        let remote_node_id = addr.node_id;
+        let remote_endpoint_id = addr.id;
         let connection = endpoint
             .connect(addr, alpn)
             .await
-            .context(format!("error connecting to {remote_node_id}"))?;
+            .context(format!("error connecting to {remote_endpoint_id}"))?;
         let (mut endpoint_send, endpoint_recv) = connection
             .open_bi()
             .await
-            .context(format!("error opening bidi stream to {remote_node_id}"))?;
+            .context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, evertyhing is up to the user
         if handshake {
@@ -482,7 +480,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
         Ok::<_, n0_snafu::Error>(())
     }
-    let addr = args.ticket.node_addr();
+    let addr = args.ticket.endpoint_addr();
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
         let next = tokio::select! {
@@ -518,11 +516,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
-    let node_addr = endpoint.node_addr();
-    let mut short = node_addr.clone();
-    let ticket = NodeTicket::new(node_addr);
-    short.direct_addresses.clear();
-    let short = NodeTicket::new(short);
+    let addr = endpoint.addr();
+    let short = create_short_ticket(&addr);
+    let ticket = EndpointTicket::new(addr);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -533,8 +529,8 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     if args.common.verbose > 0 {
         eprintln!("or:\ndumbpipe connect-tcp {short}");
     }
-    tracing::info!("node id is {}", ticket.node_addr().node_id);
-    tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
+    tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
+    tracing::info!("relay url is {:?}", ticket.endpoint_addr().relay_urls().next().map_or("None".to_string(), |url| url.to_string()));
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
@@ -543,13 +539,13 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         handshake: bool,
     ) -> Result<()> {
         let connection = connecting.await.context("error accepting connection")?;
-        let remote_node_id = &connection.remote_node_id()?;
-        tracing::info!("got connection from {}", remote_node_id);
+        let remote_endpoint_id = &connection.remote_id()?;
+        tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
             .await
             .context("error accepting stream")?;
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if handshake {
             // read the handshake and verify it
             let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
@@ -592,6 +588,15 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     Ok(())
 }
 
+/// Creates a ticket that only includes the id and any relay urls
+fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
+    let mut short = EndpointAddr::new(addr.id);
+    for relay_url in addr.relay_urls() {
+        short = short.with_relay_url(relay_url.clone());
+    }
+    short.into()
+}
+
 #[cfg(unix)]
 /// Listen on an endpoint and forward incoming connections to a Unix socket.
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
@@ -600,11 +605,9 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
-    let node_addr = endpoint.node_addr();
-    let mut short = node_addr.clone();
-    let ticket = NodeTicket::new(node_addr);
-    short.direct_addresses.clear();
-    let short = NodeTicket::new(short);
+    let addr = endpoint.addr();
+    let short = create_short_ticket(&addr);
+    let ticket = EndpointTicket::new(addr);
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -620,8 +623,8 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         eprintln!("or:\ndumbpipe connect-unix --socket-path /path/to/client.sock {short}");
         eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {short}");
     }
-    tracing::info!("node id is {}", ticket.node_addr().node_id);
-    tracing::info!("derp url is {:?}", ticket.node_addr().relay_url);
+    tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
+    tracing::info!("relay url is {:?}", ticket.endpoint_addr().relay_urls().next().map_or("None".to_string(), |url| url.to_string()));
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
@@ -631,13 +634,13 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     ) -> Result<()> {
         tracing::trace!("accepting connection");
         let connection = connecting.await.context("error accepting connection")?;
-        let remote_node_id = &connection.remote_node_id()?;
-        tracing::info!("got connection from {}", remote_node_id);
+        let remote_endpoint_id = &connection.remote_id()?;
+        tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
             .await
             .context("error accepting stream")?;
-        tracing::info!("accepted bidi stream from {}", remote_node_id);
+        tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if handshake {
             // read the handshake and verify it
             tracing::trace!("reading handshake");
@@ -723,13 +726,13 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         }
     }
 
-    let addr = args.ticket.node_addr();
-    tracing::info!("connecting to remote node: {:?}", addr);
+    let addr = args.ticket.endpoint_addr();
+    tracing::info!("connecting to remote endpoint: {:?}", addr);
     let connection = endpoint
         .connect(addr.clone(), &args.common.alpn()?)
         .await
-        .context("failed to connect to remote node")?;
-    tracing::info!("connected to remote node successfully");
+        .context("failed to connect to remote endpoint")?;
+    tracing::info!("connected to remote endpoint successfully");
 
     let unix_listener = UnixListener::bind(&socket_path)
         .with_context(|| format!("failed to bind Unix socket at {socket_path:?}"))?;
