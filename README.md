@@ -8,7 +8,7 @@ relay if hole punching does not succeed.
 It is also useful as a standalone tool for quick copy jobs.
 
 This is inspired by the unix tool [netcat](https://en.wikipedia.org/wiki/Netcat). While netcat
-works with IP addresses, dumbpipe works with 256 bit node ids and therefore is somewhat location transparent. In addition, connections are encrypted using TLS.
+works with IP addresses, dumbpipe works with 256 bit endpoint ids and therefore is somewhat location transparent. In addition, connections are encrypted using TLS.
 
 # Installation
 
@@ -44,7 +44,7 @@ outputs ticket
 
 ### Receiver side
 ```
-dumbpipe connect nodeealvvv4nwa522qhznqrblv6jxcrgnvpapvakxw5i6mwltmm6ps2r4aicamaakdu5wtjasadei2qdfuqjadakqk3t2ieq | ffplay -f mpegts -fflags nobuffer -framedrop -
+dumbpipe connect endpointealvvv4nwa522qhznqrblv6jxcrgnvpapvakxw5i6mwltmm6ps2r4aicamaakdu5wtjasadei2qdfuqjadakqk3t2ieq | ffplay -f mpegts -fflags nobuffer -framedrop -
 ```
 
 - Adjust the ffmpeg options according to your local platform and video capture devices.
