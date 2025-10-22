@@ -1,5 +1,5 @@
 #![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
-use dumbpipe::NodeTicket;
+use dumbpipe::EndpointTicket;
 use rand::Rng;
 
 use std::{
@@ -68,7 +68,7 @@ fn connect_listen_happy() {
     let header = read_ascii_lines(3, &mut listen).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
-    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
 
     let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
@@ -109,7 +109,7 @@ fn connect_listen_custom_alpn_happy() {
     let header = read_ascii_lines(3, &mut listen).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
-    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
 
     let connect = duct::cmd(
         dumbpipe_bin(),
@@ -153,7 +153,7 @@ fn connect_listen_ctrlc_connect() {
     let header = read_ascii_lines(3, &mut listen).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
-    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
 
     let mut connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
@@ -193,7 +193,7 @@ fn connect_listen_ctrlc_listen() {
     let header = read_ascii_lines(3, &mut listen).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
-    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
 
     let mut connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
@@ -243,7 +243,7 @@ fn listen_tcp_happy() {
     let header = read_ascii_lines(4, &mut listen_tcp).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
-    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
     // poke the listen-tcp process with a connect command
     let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
@@ -270,7 +270,7 @@ fn connect_tcp_happy() {
     let header = read_ascii_lines(3, &mut listen).unwrap();
     let header = String::from_utf8(header).unwrap();
     let ticket = header.split_ascii_whitespace().last().unwrap();
-    let ticket = NodeTicket::from_str(ticket).unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
     let ticket = ticket.to_string();
 
     // start a dumbpipe connect-tcp process
