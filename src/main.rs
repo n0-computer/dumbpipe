@@ -1,10 +1,10 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
-use hex::FromHexError;
 use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, KeyParsingError, SecretKey};
 use n0_snafu::{Result, ResultExt};
 use snafu::Snafu;
+use ssh_key::Algorithm;
 use std::{
     borrow::Cow,
     io,
@@ -357,6 +357,9 @@ pub enum PersistError {
     },
 
     #[snafu(transparent)]
+    KeyEncodeError { source: ssh_key::Error },
+
+    #[snafu(transparent)]
     KeyDecodeError { source: KeyDecodeErrorSource },
 }
 
@@ -368,30 +371,35 @@ fn for_file(file: PathBuf) -> impl FnOnce(std::io::Error) -> PersistError {
 #[non_exhaustive]
 pub enum KeyDecodeErrorSource {
     #[snafu(transparent)]
-    Hex {
-        source: FromHexError,
+    SshParsing {
+        source: ssh_key::Error,
     },
 
     #[snafu(transparent)]
-    Parsing {
+    IrohParsing {
         source: iroh::KeyParsingError,
     },
 
-    InvalidSecretKeySize,
+    InvalidKeyType {
+        algorithm: Option<String>,
+    },
 }
 
-impl From<FromHexError> for PersistError {
-    fn from(source: FromHexError) -> Self {
+impl PersistError {
+    fn ssh_parsing_error(source: ssh_key::Error) -> Self {
         PersistError::KeyDecodeError {
-            source: KeyDecodeErrorSource::Hex { source },
+            source: KeyDecodeErrorSource::SshParsing { source },
         }
+    }
+    fn ssh_serializing_error(source: ssh_key::Error) -> Self {
+        PersistError::KeyEncodeError { source }
     }
 }
 
 impl From<KeyParsingError> for PersistError {
     fn from(source: KeyParsingError) -> Self {
         PersistError::KeyDecodeError {
-            source: KeyDecodeErrorSource::Parsing { source },
+            source: KeyDecodeErrorSource::IrohParsing { source },
         }
     }
 }
@@ -402,30 +410,43 @@ async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>, P
             debug!("Secret key not found: {:?}", &key_path);
             return Ok(None);
         }
-        let key_base64 = tokio::fs::read_to_string(key_path).await?;
-        let key_base64 = key_base64.trim();
-        let key_bytes = hex::decode(key_base64)?;
-        if key_bytes.len() != 32 {
+        let keystr = tokio::fs::read_to_string(key_path).await?;
+        let ser_key = ssh_key::private::PrivateKey::from_openssh(keystr)
+            .map_err(PersistError::ssh_parsing_error)?;
+        let ssh_key::private::KeypairData::Ed25519(kp) = ser_key.key_data() else {
+            let algorithm = ser_key.key_data().algorithm().ok();
+            let algorithm_name = algorithm
+                .as_ref()
+                .map(Algorithm::as_str)
+                .map(ToString::to_string);
             return Err(PersistError::KeyDecodeError {
-                source: KeyDecodeErrorSource::InvalidSecretKeySize,
+                source: KeyDecodeErrorSource::InvalidKeyType {
+                    algorithm: algorithm_name,
+                },
             });
-        }
-        let key = SecretKey::try_from(&key_bytes[0..32]).map_err(KeyParsingError::from)?;
+        };
+        let key = SecretKey::from_bytes(&kp.private.to_bytes());
         Ok(Some(key))
     } else {
         Ok(None)
     }
 }
 
-async fn write_key(key_path: &Path, key: &SecretKey) -> Result<(), PersistError> {
-    let mut secret_hex = hex::encode(key.to_bytes());
-    secret_hex.push('\n');
+async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<(), PersistError> {
+    let ckey = ssh_key::private::Ed25519Keypair {
+        public: secret_key.public().as_verifying_key().into(),
+        private: secret_key.as_signing_key().into(),
+    };
+    let ser_key = ssh_key::private::PrivateKey::from(ckey)
+        .to_openssh(ssh_key::LineEnding::default())
+        .map_err(PersistError::ssh_serializing_error)?;
+
     let mut open_options = tokio::fs::OpenOptions::new();
 
     #[cfg(unix)]
     open_options.mode(0o400); // Read for owner only
 
-    create_file(open_options, key_path, &secret_hex).await?;
+    create_file(open_options, key_path, ser_key.as_str()).await?;
     Ok(())
 }
 
