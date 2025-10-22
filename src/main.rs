@@ -9,6 +9,7 @@ use std::{
     borrow::Cow,
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    path::{Path, PathBuf},
     str::FromStr,
 };
 use tokio::{
@@ -20,10 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::log::{debug, error};
 
 #[cfg(unix)]
-use {
-    std::path::{Path, PathBuf},
-    tokio::net::{UnixListener, UnixStream},
-};
+use tokio::net::{UnixListener, UnixStream};
 
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
@@ -423,7 +421,10 @@ async fn write_key(key_path: &Path, key: &SecretKey) -> Result<(), PersistError>
     let mut secret_hex = hex::encode(key.to_bytes());
     secret_hex.push('\n');
     let mut open_options = tokio::fs::OpenOptions::new();
+
+    #[cfg(unix)]
     open_options.mode(0o400); // Read for owner only
+
     create_file(open_options, key_path, &secret_hex).await?;
     Ok(())
 }
