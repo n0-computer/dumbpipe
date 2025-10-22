@@ -2,7 +2,7 @@
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use hex::FromHexError;
-use iroh::{endpoint::Connecting, Endpoint, KeyParsingError, NodeAddr, SecretKey};
+use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, KeyParsingError, SecretKey};
 use n0_snafu::{Result, ResultExt};
 use snafu::Snafu;
 use std::{
