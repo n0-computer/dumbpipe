@@ -1,9 +1,8 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
-use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, KeyParsingError, SecretKey};
-use n0_snafu::{Result, ResultExt};
-use snafu::Snafu;
+use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
+use n0_snafu::{format_err, Result, ResultExt};
 use ssh_key::Algorithm;
 use std::{
     borrow::Cow,
@@ -13,7 +12,7 @@ use std::{
     str::FromStr,
 };
 use tokio::{
-    fs,
+    fs::{self, OpenOptions},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
 };
@@ -34,6 +33,11 @@ use tokio::net::{UnixListener, UnixStream};
 ///
 /// For all subcommands, you can specify a secret key using the IROH_SECRET
 /// environment variable. If you don't, a random one will be generated.
+///
+/// For all subcommands, you can specify that the generated key should be
+/// persisted at either a default location or a explicitly given file. In that
+/// case the key will be read from that location on subsequent runs that specify
+/// the same location. If you don't, a fresh key will be generated each time.
 ///
 /// You can also specify a port for the endpoint. If you don't, a random one
 /// will be chosen.
@@ -317,22 +321,16 @@ async fn create_endpoint(
 
 async fn get_secret_key(persist_at: Option<&PathBuf>) -> SecretKey {
     let persist_at_cow = persist_at
-        .map(Cow::from) // Reference
-        .or_else(|| {
-            std::env::home_dir().map(|mut p| {
-                p.push(".auth");
-                p.push("dumbpipe.key");
-                debug!("Persisting key at: {p:?}");
-                Cow::from(p) // Owned
-            })
-        });
-    let persist_at = persist_at_cow.as_ref().map(Cow::as_ref);
+        .map(Cow::from) // Borrowed Cow
+        .or_else(|| default_persist_at().map(Cow::from)); // Owned Cow
+    let mut persist_at = persist_at_cow.as_ref().map(Cow::as_ref);
 
     match read_key(persist_at).await {
         Ok(Some(result)) => return result,
         Ok(None) => {}
         Err(error) => {
             error!("Error reading persisted dumbpipe key: [{:?}]", error);
+            persist_at = None; // Don't overwrite the key that we couln't read
         }
     }
 
@@ -345,85 +343,35 @@ async fn get_secret_key(persist_at: Option<&PathBuf>) -> SecretKey {
     key
 }
 
-#[derive(Debug, Snafu)]
-#[non_exhaustive]
-pub enum PersistError {
-    #[snafu(transparent)]
-    IOError { source: std::io::Error },
-
-    FileError {
-        source: std::io::Error,
-        file: PathBuf,
-    },
-
-    #[snafu(transparent)]
-    KeyEncodeError { source: ssh_key::Error },
-
-    #[snafu(transparent)]
-    KeyDecodeError { source: KeyDecodeErrorSource },
+fn default_persist_at() -> Option<PathBuf> {
+    dirs::config_dir().map(|mut p| {
+        p.push("dumbpipe");
+        p.push("dumbpipe.key");
+        debug!("Persisting key at: {p:?}");
+        p
+    })
 }
 
-fn for_file(file: PathBuf) -> impl FnOnce(std::io::Error) -> PersistError {
-    return |e| PersistError::FileError { source: e, file };
-}
-
-#[derive(Debug, Snafu)]
-#[non_exhaustive]
-pub enum KeyDecodeErrorSource {
-    #[snafu(transparent)]
-    SshParsing {
-        source: ssh_key::Error,
-    },
-
-    #[snafu(transparent)]
-    IrohParsing {
-        source: iroh::KeyParsingError,
-    },
-
-    InvalidKeyType {
-        algorithm: Option<String>,
-    },
-}
-
-impl PersistError {
-    fn ssh_parsing_error(source: ssh_key::Error) -> Self {
-        PersistError::KeyDecodeError {
-            source: KeyDecodeErrorSource::SshParsing { source },
-        }
-    }
-    fn ssh_serializing_error(source: ssh_key::Error) -> Self {
-        PersistError::KeyEncodeError { source }
-    }
-}
-
-impl From<KeyParsingError> for PersistError {
-    fn from(source: KeyParsingError) -> Self {
-        PersistError::KeyDecodeError {
-            source: KeyDecodeErrorSource::IrohParsing { source },
-        }
-    }
-}
-
-async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>, PersistError> {
+async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>> {
     if let Some(key_path) = key_path_option {
         if !key_path.exists() {
             debug!("Secret key not found: {:?}", &key_path);
             return Ok(None);
         }
-        let keystr = tokio::fs::read_to_string(key_path).await?;
+        let keystr = tokio::fs::read_to_string(key_path)
+            .await
+            .map_err(|e| format_err!("Read key error: {key_path:?}: {e:?}"))?;
         let ser_key = ssh_key::private::PrivateKey::from_openssh(keystr)
-            .map_err(PersistError::ssh_parsing_error)?;
+            .map_err(|e| format_err!("Parse key error: {key_path:?}: {e:?}"))?;
         let ssh_key::private::KeypairData::Ed25519(kp) = ser_key.key_data() else {
             let algorithm = ser_key.key_data().algorithm().ok();
             let algorithm_name = algorithm
                 .as_ref()
                 .map(Algorithm::as_str)
                 .map(ToString::to_string);
-            return Err(PersistError::KeyDecodeError {
-                source: KeyDecodeErrorSource::InvalidKeyType {
-                    algorithm: algorithm_name,
-                },
-            });
+            return Err(format_err!(
+                "Invalid key type: {key_path:?}: {algorithm_name:?}"
+            ));
         };
         let key = SecretKey::from_bytes(&kp.private.to_bytes());
         Ok(Some(key))
@@ -432,16 +380,16 @@ async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>, P
     }
 }
 
-async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<(), PersistError> {
+async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<()> {
     let ckey = ssh_key::private::Ed25519Keypair {
         public: secret_key.public().as_verifying_key().into(),
         private: secret_key.as_signing_key().into(),
     };
     let ser_key = ssh_key::private::PrivateKey::from(ckey)
         .to_openssh(ssh_key::LineEnding::default())
-        .map_err(PersistError::ssh_serializing_error)?;
+        .map_err(|e| format_err!("Error serializing SSH key: {e:?}"))?;
 
-    let mut open_options = tokio::fs::OpenOptions::new();
+    let mut open_options = OpenOptions::new();
 
     #[cfg(unix)]
     open_options.mode(0o400); // Read for owner only
@@ -450,22 +398,20 @@ async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<(), Persis
     Ok(())
 }
 
-async fn create_file(
-    mut open_options: tokio::fs::OpenOptions,
-    file: &Path,
-    content: &str,
-) -> Result<(), PersistError> {
+async fn create_file(mut open_options: OpenOptions, file: &Path, content: &str) -> Result {
     let mut parent = file.to_owned();
     if parent.pop() {
         fs::create_dir_all(parent.clone())
             .await
-            .map_err(for_file(parent))?
+            .map_err(|e| format_err!("Error creating directory {parent:?}: {e:?}"))?
     }
-    let mut open_file = open_options.create(true).write(true).open(file).await?;
+    let mut open_file = (open_options.create(true).write(true).open(file))
+        .await
+        .map_err(|e| format_err!("Error creating key file: {file:?}: {e:?}"))?;
     open_file
         .write_all(content.as_bytes())
         .await
-        .map_err(for_file(file.to_path_buf()))?;
+        .map_err(|e| format_err!("Error writing key file: {file:?}: {e:?}"))?;
     Ok(())
 }
 
