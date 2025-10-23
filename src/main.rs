@@ -389,29 +389,30 @@ async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<()> {
         .to_openssh(ssh_key::LineEnding::default())
         .map_err(|e| format_err!("Error serializing SSH key: {e:?}"))?;
 
-    let mut open_options = OpenOptions::new();
-
-    #[cfg(unix)]
-    open_options.mode(0o400); // Read for owner only
-
-    create_file(open_options, key_path, ser_key.as_str()).await?;
+    create_secret_file(key_path, ser_key.as_str()).await?;
     Ok(())
 }
 
-async fn create_file(mut open_options: OpenOptions, file: &Path, content: &str) -> Result {
+async fn create_secret_file(file: &Path, content: &str) -> Result {
     let mut parent = file.to_owned();
     if parent.pop() {
         fs::create_dir_all(parent.clone())
             .await
             .map_err(|e| format_err!("Error creating directory {parent:?}: {e:?}"))?
     }
+
+    let mut open_options = OpenOptions::new();
+
+    #[cfg(unix)]
+    open_options.mode(0o400); // Read for owner only
+
     let mut open_file = (open_options.create(true).write(true).open(file))
         .await
-        .map_err(|e| format_err!("Error creating key file: {file:?}: {e:?}"))?;
+        .map_err(|e| format_err!("Error creating secret-file: {file:?}: {e:?}"))?;
     open_file
         .write_all(content.as_bytes())
         .await
-        .map_err(|e| format_err!("Error writing key file: {file:?}: {e:?}"))?;
+        .map_err(|e| format_err!("Error writing secret-file: {file:?}: {e:?}"))?;
     Ok(())
 }
 
