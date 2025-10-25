@@ -47,7 +47,7 @@ pub enum Commands {
     ///
     /// This command only really makes sense when you are providing dumbpipe with a
     /// secret key.
-    GenerateTicket(GenerateTicketArgs),
+    GenerateTicket,
 
     /// Listen on an endpoint and forward stdin/stdout to the first incoming
     /// bidi stream.
@@ -153,12 +153,6 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
     } else {
         hex::decode(alpn).e()?
     })
-}
-
-#[derive(Parser, Debug)]
-pub struct GenerateTicketArgs {
-    #[clap(flatten)]
-    pub common: CommonArgs,
 }
 
 #[derive(Parser, Debug)]
@@ -836,14 +830,12 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     Ok(())
 }
 
-async fn generate_ticket(args: GenerateTicketArgs) -> Result<()> {
+async fn generate_ticket() -> Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    // wait for the endpoint to figure out its home relay and addresses before making a ticket
-    endpoint.online().await;
-    let addr = endpoint.addr();
-    let short = create_short_ticket(&addr);
-    println!("{}", short);
+    let public_key = secret_key.public();
+    let addr = EndpointAddr::new(public_key);
+    let ticket = EndpointTicket::new(addr);
+    println!("{}", ticket);
     Ok(())
 }
 
@@ -852,7 +844,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let res = match args.command {
-        Commands::GenerateTicket(args) => generate_ticket(args).await,
+        Commands::GenerateTicket => generate_ticket().await,
         Commands::Listen(args) => listen_stdio(args).await,
         Commands::ListenTcp(args) => listen_tcp(args).await,
         Commands::Connect(args) => connect_stdio(args).await,
