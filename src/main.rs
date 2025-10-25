@@ -1,7 +1,7 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
-use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr, SecretKey, endpoint::Connecting};
 use n0_snafu::{Result, ResultExt};
 use std::{
     io,
@@ -282,16 +282,14 @@ async fn copy_from_quinn(
 }
 
 /// Get the secret key or generate a new one.
-///
-/// Print the secret key to stderr if it was generated, so the user can save it.
 fn get_or_create_secret() -> Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
         Err(_) => {
             let key = SecretKey::generate(&mut rand::rng());
             eprintln!(
-                "using secret key {}",
-                data_encoding::HEXLOWER.encode(&key.to_bytes())
+                "generated new endpoint ID: {}",
+                data_encoding::HEXLOWER.encode(&*key.public())
             );
             Ok(key)
         }
