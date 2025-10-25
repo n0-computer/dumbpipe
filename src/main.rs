@@ -2,23 +2,25 @@
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
-use n0_snafu::{Result, ResultExt};
+use n0_snafu::{format_err, Result, ResultExt};
+use ssh_key::Algorithm;
 use std::{
+    borrow::Cow,
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    path::{Path, PathBuf},
     str::FromStr,
 };
 use tokio::{
+    fs::{self, OpenOptions},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::log::{debug, error};
 
 #[cfg(unix)]
-use {
-    std::path::PathBuf,
-    tokio::net::{UnixListener, UnixStream},
-};
+use tokio::net::{UnixListener, UnixStream};
 
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
@@ -31,6 +33,11 @@ use {
 ///
 /// For all subcommands, you can specify a secret key using the IROH_SECRET
 /// environment variable. If you don't, a random one will be generated.
+///
+/// For all subcommands, you can specify that the generated key should be
+/// persisted at either a default location or a explicitly given file. In that
+/// case the key will be read from that location on subsequent runs that specify
+/// the same location. If you don't, a fresh key will be generated each time.
 ///
 /// You can also specify a port for the endpoint. If you don't, a random one
 /// will be chosen.
@@ -128,6 +135,13 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
+
+    /// Use a persistent node key pair
+    #[arg(long)]
+    persist: bool,
+    /// Write and read the node keys at the given location
+    #[arg(long)]
+    persist_at: Option<PathBuf>,
 
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
@@ -305,8 +319,108 @@ async fn create_endpoint(
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
+    if common.persist || common.persist_at.is_some() {
+        builder = builder.secret_key(get_secret_key(common.persist_at.as_ref()).await);
+    }
     let endpoint = builder.bind().await?;
     Ok(endpoint)
+}
+
+async fn get_secret_key(persist_at: Option<&PathBuf>) -> SecretKey {
+    let persist_at_cow = persist_at
+        .map(Cow::from) // Borrowed Cow
+        .or_else(|| default_persist_at().map(Cow::from)); // Owned Cow
+    let mut persist_at = persist_at_cow.as_ref().map(Cow::as_ref);
+
+    match read_key(persist_at).await {
+        Ok(Some(result)) => return result,
+        Ok(None) => {}
+        Err(error) => {
+            error!("Error reading persisted dumbpipe key: [{:?}]", error);
+            persist_at = None; // Don't overwrite the key that we couln't read
+        }
+    }
+
+    let key = SecretKey::generate(&mut rand::rng());
+    if let Some(node_path) = persist_at {
+        if let Err(error) = write_key(node_path, &key).await {
+            error!("Could not persist dumbpipe key: {node_path:?}: {error:?}");
+        }
+    }
+    key
+}
+
+fn default_persist_at() -> Option<PathBuf> {
+    dirs::config_dir().map(|mut p| {
+        p.push("dumbpipe");
+        p.push("dumbpipe.key");
+        debug!("Persisting key at: {p:?}");
+        p
+    })
+}
+
+async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>> {
+    if let Some(key_path) = key_path_option {
+        if !key_path.exists() {
+            debug!("Secret key not found: {:?}", &key_path);
+            return Ok(None);
+        }
+        let keystr = tokio::fs::read_to_string(key_path)
+            .await
+            .map_err(|e| format_err!("Read key error: {key_path:?}: {e:?}"))?;
+        let ser_key = ssh_key::private::PrivateKey::from_openssh(keystr)
+            .map_err(|e| format_err!("Parse key error: {key_path:?}: {e:?}"))?;
+        let ssh_key::private::KeypairData::Ed25519(kp) = ser_key.key_data() else {
+            let algorithm = ser_key.key_data().algorithm().ok();
+            let algorithm_name = algorithm
+                .as_ref()
+                .map(Algorithm::as_str)
+                .map(ToString::to_string);
+            return Err(format_err!(
+                "Invalid key type: {key_path:?}: {algorithm_name:?}"
+            ));
+        };
+        let key = SecretKey::from_bytes(&kp.private.to_bytes());
+        Ok(Some(key))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<()> {
+    let ckey = ssh_key::private::Ed25519Keypair {
+        public: secret_key.public().as_verifying_key().into(),
+        private: secret_key.as_signing_key().into(),
+    };
+    let ser_key = ssh_key::private::PrivateKey::from(ckey)
+        .to_openssh(ssh_key::LineEnding::default())
+        .map_err(|e| format_err!("Error serializing SSH key: {e:?}"))?;
+
+    create_secret_file(key_path, ser_key.as_str()).await?;
+    Ok(())
+}
+
+async fn create_secret_file(file: &Path, content: &str) -> Result {
+    let mut parent = file.to_owned();
+    if parent.pop() {
+        fs::create_dir_all(parent.clone())
+            .await
+            .map_err(|e| format_err!("Error creating directory {parent:?}: {e:?}"))?
+    }
+
+    let mut open_options = OpenOptions::new();
+
+    #[cfg(unix)]
+    open_options.mode(0o400); // Read for owner only
+
+    let mut open_file = (open_options.create(true).write(true).open(file))
+        .await
+        .map_err(|e| format_err!("Error creating secret-file: {file:?}: {e:?}"))?;
+    open_file
+        .write_all(content.as_bytes())
+        .await
+        .map_err(|e| format_err!("Error writing secret-file: {file:?}: {e:?}"))?;
+    Ok(())
 }
 
 fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
