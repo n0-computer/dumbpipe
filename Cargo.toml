@@ -19,7 +19,8 @@ clap = { version = "4.4.10", features = ["derive"] }
 dirs = "6.0.0"
 hex = "0.4.3"
 iroh = { version = "0.94", default-features = false }
-iroh-tickets= { version = "0.1" }
+iroh-tickets = { version = "0.1" }
+iroh-persist = "0.1.0"
 quinn = { version = "0.14", package = "iroh-quinn" }
 rand = "0.9.2"
 ssh-key = { version = "0.7.0-rc.3", features = ["ed25519"] }

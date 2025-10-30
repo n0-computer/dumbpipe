@@ -2,22 +2,18 @@
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
-use n0_snafu::{format_err, Result, ResultExt};
-use ssh_key::Algorithm;
+use iroh_persist::KeyRetriever;
+use n0_snafu::{Result, ResultExt};
 use std::{
-    borrow::Cow,
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    path::{Path, PathBuf},
-    str::FromStr,
+    path::PathBuf,
 };
 use tokio::{
-    fs::{self, OpenOptions},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::log::{debug, error};
 
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -283,20 +279,13 @@ async fn copy_from_quinn(
 }
 
 /// Get the secret key or generate a new one.
-///
-/// Print the secret key to stderr if it was generated, so the user can save it.
-fn get_or_create_secret() -> Result<SecretKey> {
-    match std::env::var("IROH_SECRET") {
-        Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
-        Err(_) => {
-            let key = SecretKey::generate(&mut rand::rng());
-            eprintln!(
-                "using secret key {}",
-                data_encoding::HEXLOWER.encode(&key.to_bytes())
-            );
-            Ok(key)
-        }
-    }
+async fn get_or_create_secret(common: &CommonArgs) -> SecretKey {
+    KeyRetriever::new("dumbpipe")
+        .persist(common.persist)
+        .persist_at(common.persist_at.as_ref())
+        .lenient()
+        .get()
+        .await
 }
 
 /// Create a new iroh endpoint.
@@ -312,108 +301,9 @@ async fn create_endpoint(
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr_v6(addr);
     }
-    if common.persist || common.persist_at.is_some() {
-        builder = builder.secret_key(get_secret_key(common.persist_at.as_ref()).await);
-    }
+
     let endpoint = builder.bind().await?;
     Ok(endpoint)
-}
-
-async fn get_secret_key(persist_at: Option<&PathBuf>) -> SecretKey {
-    let persist_at_cow = persist_at
-        .map(Cow::from) // Borrowed Cow
-        .or_else(|| default_persist_at().map(Cow::from)); // Owned Cow
-    let mut persist_at = persist_at_cow.as_ref().map(Cow::as_ref);
-
-    match read_key(persist_at).await {
-        Ok(Some(result)) => return result,
-        Ok(None) => {}
-        Err(error) => {
-            error!("Error reading persisted dumbpipe key: [{:?}]", error);
-            persist_at = None; // Don't overwrite the key that we couln't read
-        }
-    }
-
-    let key = SecretKey::generate(&mut rand::rng());
-    if let Some(node_path) = persist_at {
-        if let Err(error) = write_key(node_path, &key).await {
-            error!("Could not persist dumbpipe key: {node_path:?}: {error:?}");
-        }
-    }
-    key
-}
-
-fn default_persist_at() -> Option<PathBuf> {
-    dirs::config_dir().map(|mut p| {
-        p.push("dumbpipe");
-        p.push("dumbpipe.key");
-        debug!("Persisting key at: {p:?}");
-        p
-    })
-}
-
-async fn read_key(key_path_option: Option<&Path>) -> Result<Option<SecretKey>> {
-    if let Some(key_path) = key_path_option {
-        if !key_path.exists() {
-            debug!("Secret key not found: {:?}", &key_path);
-            return Ok(None);
-        }
-        let keystr = tokio::fs::read_to_string(key_path)
-            .await
-            .map_err(|e| format_err!("Read key error: {key_path:?}: {e:?}"))?;
-        let ser_key = ssh_key::private::PrivateKey::from_openssh(keystr)
-            .map_err(|e| format_err!("Parse key error: {key_path:?}: {e:?}"))?;
-        let ssh_key::private::KeypairData::Ed25519(kp) = ser_key.key_data() else {
-            let algorithm = ser_key.key_data().algorithm().ok();
-            let algorithm_name = algorithm
-                .as_ref()
-                .map(Algorithm::as_str)
-                .map(ToString::to_string);
-            return Err(format_err!(
-                "Invalid key type: {key_path:?}: {algorithm_name:?}"
-            ));
-        };
-        let key = SecretKey::from_bytes(&kp.private.to_bytes());
-        Ok(Some(key))
-    } else {
-        Ok(None)
-    }
-}
-
-async fn write_key(key_path: &Path, secret_key: &SecretKey) -> Result<()> {
-    let ckey = ssh_key::private::Ed25519Keypair {
-        public: secret_key.public().as_verifying_key().into(),
-        private: secret_key.as_signing_key().into(),
-    };
-    let ser_key = ssh_key::private::PrivateKey::from(ckey)
-        .to_openssh(ssh_key::LineEnding::default())
-        .map_err(|e| format_err!("Error serializing SSH key: {e:?}"))?;
-
-    create_secret_file(key_path, ser_key.as_str()).await?;
-    Ok(())
-}
-
-async fn create_secret_file(file: &Path, content: &str) -> Result {
-    let mut parent = file.to_owned();
-    if parent.pop() {
-        fs::create_dir_all(parent.clone())
-            .await
-            .map_err(|e| format_err!("Error creating directory {parent:?}: {e:?}"))?
-    }
-
-    let mut open_options = OpenOptions::new();
-
-    #[cfg(unix)]
-    open_options.mode(0o400); // Read for owner only
-
-    let mut open_file = (open_options.create(true).write(true).open(file))
-        .await
-        .map_err(|e| format_err!("Error creating secret-file: {file:?}: {e:?}"))?;
-    open_file
-        .write_all(content.as_bytes())
-        .await
-        .map_err(|e| format_err!("Error writing secret-file: {file:?}: {e:?}"))?;
-    Ok(())
 }
 
 fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
@@ -456,7 +346,7 @@ async fn forward_bidi(
 }
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
     endpoint.online().await;
@@ -518,7 +408,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 }
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await;
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
@@ -555,7 +445,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .addr
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .context("unable to bind endpoint")?;
@@ -632,7 +522,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Ok(addrs) => addrs.collect::<Vec<_>>(),
         Err(e) => snafu::whatever!("invalid host string {}: {}", args.host, e),
     };
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
@@ -728,7 +618,7 @@ fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
 /// Listen on an endpoint and forward incoming connections to a Unix socket.
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
@@ -844,7 +734,7 @@ impl Drop for UnixSocketGuard {
 /// Listen on a Unix socket and forward connections to an endpoint.
 async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .context("unable to bind endpoint")?;
