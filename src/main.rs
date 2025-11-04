@@ -279,13 +279,13 @@ async fn copy_from_quinn(
 }
 
 /// Get the secret key or generate a new one.
-async fn get_or_create_secret(common: &CommonArgs) -> SecretKey {
+async fn get_or_create_secret(common: &CommonArgs) -> Result<SecretKey> {
     KeyRetriever::new("dumbpipe")
         .persist(common.persist)
         .persist_at(common.persist_at.as_ref())
-        .lenient()
         .get()
         .await
+        .map_err(n0_snafu::Error::from)
 }
 
 /// Create a new iroh endpoint.
@@ -346,7 +346,7 @@ async fn forward_bidi(
 }
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
-    let secret_key = get_or_create_secret(&args.common).await;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
     endpoint.online().await;
@@ -408,7 +408,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 }
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
-    let secret_key = get_or_create_secret(&args.common).await;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
@@ -445,7 +445,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .addr
         .to_socket_addrs()
         .context(format!("invalid host string {}", args.addr))?;
-    let secret_key = get_or_create_secret(&args.common).await;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .context("unable to bind endpoint")?;
@@ -522,7 +522,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Ok(addrs) => addrs.collect::<Vec<_>>(),
         Err(e) => snafu::whatever!("invalid host string {}: {}", args.host, e),
     };
-    let secret_key = get_or_create_secret(&args.common).await;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
@@ -618,7 +618,7 @@ fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
 /// Listen on an endpoint and forward incoming connections to a Unix socket.
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret(&args.common).await;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
@@ -734,7 +734,7 @@ impl Drop for UnixSocketGuard {
 /// Listen on a Unix socket and forward connections to an endpoint.
 async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret(&args.common).await;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .context("unable to bind endpoint")?;

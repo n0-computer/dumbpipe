@@ -1698,9 +1698,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-persist"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb003f3a9238687b794d80d4c01cf912cf909f6060b3017364b1b2cd6bec7db9"
+checksum = "4fe49e858332fe7f5fe3e5bceec3a6645a1df64d31bf5dd996f857a51b3f388e"
 dependencies = [
  "dirs",
  "iroh",
