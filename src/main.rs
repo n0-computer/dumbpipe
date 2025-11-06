@@ -1,8 +1,8 @@
 //! Command line arguments.
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
-use iroh::{endpoint::Connecting, Endpoint, EndpointAddr, SecretKey};
-use n0_error::{bail_any, ensure_any, AnyError, StdResultExt};
+use iroh::{endpoint::Accepting, Endpoint, EndpointAddr, SecretKey};
+use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
@@ -19,8 +19,6 @@ use {
     std::path::PathBuf,
     tokio::net::{UnixListener, UnixStream},
 };
-
-type Result<T, E = AnyError> = std::result::Result<T, E>;
 
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
@@ -379,7 +377,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        let remote_endpoint_id = &connection.remote_id().anyerr()?;
+        let remote_endpoint_id = &connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
@@ -418,7 +416,10 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
     // connect to the remote, try only once
-    let connection = endpoint.connect(addr.clone(), &args.common.alpn()?).await.anyerr()?;
+    let connection = endpoint
+        .connect(addr.clone(), &args.common.alpn()?)
+        .await
+        .anyerr()?;
     tracing::info!("connected to {}", remote_endpoint_id);
     // open a bidi stream, try only once
     let (mut s, r) = connection.open_bi().await.anyerr()?;
@@ -490,7 +491,10 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         if handshake {
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
-            endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
+            endpoint_send
+                .write_all(&dumbpipe::HANDSHAKE)
+                .await
+                .anyerr()?;
         }
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
         Ok::<_, AnyError>(())
@@ -556,12 +560,12 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
-        connecting: Connecting,
+        accepting: Accepting,
         addrs: Vec<std::net::SocketAddr>,
         handshake: bool,
     ) -> Result<()> {
-        let connection = connecting.await.std_context("error accepting connection")?;
-        let remote_endpoint_id = &connection.remote_id().anyerr()?;
+        let connection = accepting.await.std_context("error accepting connection")?;
+        let remote_endpoint_id = &connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
@@ -657,13 +661,13 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
-        connecting: Connecting,
+        accepting: Accepting,
         socket_path: PathBuf,
         handshake: bool,
     ) -> Result<()> {
         tracing::trace!("accepting connection");
-        let connection = connecting.await.std_context("error accepting connection")?;
-        let remote_endpoint_id = &connection.remote_id().anyerr()?;
+        let connection = accepting.await.std_context("error accepting connection")?;
+        let remote_endpoint_id = &connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
@@ -794,7 +798,10 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
             tracing::trace!("sending handshake");
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
-            endpoint_send.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
+            endpoint_send
+                .write_all(&dumbpipe::HANDSHAKE)
+                .await
+                .anyerr()?;
             tracing::trace!("handshake sent");
         }
 
