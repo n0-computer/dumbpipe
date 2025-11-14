@@ -15,7 +15,6 @@ rust-version = "1.81"
 
 [dependencies]
 clap = { version = "4.4.10", features = ["derive"] }
-dirs = "6.0.0"
 hex = "0.4.3"
 iroh = { version = "0.95", default-features = false }
 iroh-tickets = { version = "0.2" }
