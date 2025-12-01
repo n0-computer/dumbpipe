@@ -2,11 +2,12 @@
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{endpoint::Accepting, Endpoint, EndpointAddr, SecretKey};
+use iroh_persist::KeyRetriever;
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    str::FromStr,
+    path::PathBuf,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -15,10 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
-use {
-    std::path::PathBuf,
-    tokio::net::{UnixListener, UnixStream},
-};
+use tokio::net::{UnixListener, UnixStream};
 
 /// Create a dumb pipe between two machines, using an iroh endpoint.
 ///
@@ -31,6 +29,11 @@ use {
 ///
 /// For all subcommands, you can specify a secret key using the IROH_SECRET
 /// environment variable. If you don't, a random one will be generated.
+///
+/// For all subcommands, you can specify that the generated key should be
+/// persisted at either a default location or a explicitly given file. In that
+/// case the key will be read from that location on subsequent runs that specify
+/// the same location. If you don't, a fresh key will be generated each time.
 ///
 /// You can also specify a port for the endpoint. If you don't, a random one
 /// will be chosen.
@@ -47,7 +50,7 @@ pub enum Commands {
     ///
     /// This command only really makes sense when you are providing dumbpipe with a
     /// secret key.
-    GenerateTicket,
+    GenerateTicket(CommonArgs),
 
     /// Listen on an endpoint and forward stdin/stdout to the first incoming
     /// bidi stream.
@@ -128,6 +131,13 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
+
+    /// Use a persistent node key pair
+    #[arg(long)]
+    persist: bool,
+    /// Write and read the node keys at the given location
+    #[arg(long)]
+    persist_at: Option<PathBuf>,
 
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
@@ -276,20 +286,13 @@ async fn copy_from_quinn(
 }
 
 /// Get the secret key or generate a new one.
-///
-/// Print the secret key to stderr if it was generated, so the user can save it.
-fn get_or_create_secret() -> Result<SecretKey> {
-    match std::env::var("IROH_SECRET") {
-        Ok(secret) => SecretKey::from_str(&secret).std_context("invalid secret"),
-        Err(_) => {
-            let key = SecretKey::generate(&mut rand::rng());
-            eprintln!(
-                "using secret key {}",
-                data_encoding::HEXLOWER.encode(&key.to_bytes())
-            );
-            Ok(key)
-        }
-    }
+async fn get_or_create_secret(common: &CommonArgs) -> Result<SecretKey> {
+    KeyRetriever::new("dumbpipe")
+        .persist(common.persist)
+        .persist_at(common.persist_at.as_ref())
+        .get()
+        .await
+        .map_err(n0_error::AnyError::from)
 }
 
 /// Create a new iroh endpoint.
@@ -349,7 +352,7 @@ async fn forward_bidi(
 }
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
     endpoint.online().await;
@@ -411,7 +414,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 }
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
@@ -451,7 +454,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .addr
         .to_socket_addrs()
         .std_context(format!("invalid host string {}", args.addr))?;
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .std_context("unable to bind endpoint")?;
@@ -531,7 +534,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Ok(addrs) => addrs.collect::<Vec<_>>(),
         Err(e) => bail_any!("invalid host string {}: {}", args.host, e),
     };
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
@@ -627,7 +630,7 @@ fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
 /// Listen on an endpoint and forward incoming connections to a Unix socket.
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     endpoint.online().await;
@@ -743,7 +746,7 @@ impl Drop for UnixSocketGuard {
 /// Listen on a Unix socket and forward connections to an endpoint.
 async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common).await?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .std_context("unable to bind endpoint")?;
@@ -839,8 +842,8 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     Ok(())
 }
 
-async fn generate_ticket() -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+async fn generate_ticket(args: CommonArgs) -> Result<()> {
+    let secret_key = get_or_create_secret(&args).await?;
     let public_key = secret_key.public();
     let addr = EndpointAddr::new(public_key);
     let ticket = EndpointTicket::new(addr);
@@ -853,7 +856,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let res = match args.command {
-        Commands::GenerateTicket => generate_ticket().await,
+        Commands::GenerateTicket(args) => generate_ticket(args).await,
         Commands::Listen(args) => listen_stdio(args).await,
         Commands::ListenTcp(args) => listen_tcp(args).await,
         Commands::Connect(args) => connect_stdio(args).await,
