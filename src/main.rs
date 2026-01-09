@@ -300,10 +300,10 @@ async fn create_endpoint(
 ) -> Result<Endpoint> {
     let mut builder = Endpoint::builder().secret_key(secret_key).alpns(alpns);
     if let Some(addr) = common.ipv4_addr {
-        builder = builder.bind_addr_v4(addr);
+        builder = builder.bind_addr(addr)?;
     }
     if let Some(addr) = common.ipv6_addr {
-        builder = builder.bind_addr_v6(addr);
+        builder = builder.bind_addr(addr)?;
     }
     let endpoint = builder.bind().await.anyerr()?;
     Ok(endpoint)
