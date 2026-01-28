@@ -1,21 +1,21 @@
 //! Command line arguments.
-use clap::{Parser, Subcommand};
-use dumbpipe::EndpointTicket;
-use iroh::{endpoint::Accepting, Endpoint, EndpointAddr, SecretKey};
-use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
     time::Duration,
 };
+
+use clap::{Parser, Subcommand};
+use dumbpipe::EndpointTicket;
+use iroh::{endpoint::Accepting, Endpoint, EndpointAddr, SecretKey};
+use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
-
 #[cfg(unix)]
 use {
     std::path::PathBuf,
@@ -431,7 +431,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let (mut s, r) = connection.open_bi().await.anyerr()?;
     tracing::info!("opened bidi stream to {}", remote_endpoint_id);
     // send the handshake unless we are using a custom alpn
-    // when using a custom alpn, evertyhing is up to the user
+    // when using a custom alpn, everything is up to the user
     if !args.common.is_custom_alpn() {
         // the connecting side must write first. we don't know if there will be something
         // on stdin, so just write a handshake.
@@ -495,7 +495,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             .await
             .std_context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
         // send the handshake unless we are using a custom alpn
-        // when using a custom alpn, evertyhing is up to the user
+        // when using a custom alpn, everything is up to the user
         if handshake {
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
