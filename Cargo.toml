@@ -39,3 +39,7 @@ codegen-units = 1
 lto = true
 debug = "none"
 strip = true
+
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh.git", branch = "main" }
+iroh-tickets = { git = "https://github.com/n0-computer/iroh-tickets.git", branch = "iroh-X" }
