@@ -1,7 +1,4 @@
 #![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
-use dumbpipe::EndpointTicket;
-use rand::Rng;
-
 use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
@@ -9,6 +6,9 @@ use std::{
     sync::{Arc, Barrier},
     time::Duration,
 };
+
+use dumbpipe::EndpointTicket;
+use rand::Rng;
 
 // binary path
 fn dumbpipe_bin() -> &'static str {
@@ -302,14 +302,18 @@ fn connect_tcp_happy() {
 /// - The test exchanges messages to assert correct data flow.
 #[cfg(all(test, unix))]
 mod unix_socket_tests {
-    use super::*;
-    use std::io::{BufRead, Read, Write};
-    use std::net::Shutdown;
-    use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Barrier};
-    use std::time::{Duration, Instant};
+    use std::{
+        io::{BufRead, Read, Write},
+        net::Shutdown,
+        os::unix::net::{UnixListener, UnixStream},
+        path::{Path, PathBuf},
+        sync::{Arc, Barrier},
+        time::{Duration, Instant},
+    };
+
     use tempfile::TempDir;
+
+    use super::*;
 
     /// Polls until the condition returns true or timeout is reached.
     fn wait_until<F>(timeout: Duration, mut condition: F)

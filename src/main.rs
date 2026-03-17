@@ -1,24 +1,29 @@
 //! Command line arguments.
-use clap::{Parser, Subcommand};
-use dumbpipe::EndpointTicket;
-use iroh::{endpoint::Accepting, Endpoint, EndpointAddr, SecretKey};
-use iroh_persist::KeyRetriever;
-use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    path::PathBuf,
     time::Duration,
 };
+
+use clap::{Parser, Subcommand};
+use dumbpipe::EndpointTicket;
+use iroh::{
+    endpoint::{presets, Accepting},
+    Endpoint, EndpointAddr, SecretKey,
+};
+use iroh_persist::KeyRetriever;
+use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
-
 #[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
+use {
+    std::path::PathBuf,
+    tokio::net::{UnixListener, UnixStream},
+};
 
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -241,18 +246,18 @@ pub struct ConnectUnixArgs {
     pub common: CommonArgs,
 }
 
-/// Copy from a reader to a quinn stream.
+/// Copy from a reader to a noq stream.
 ///
 /// Will send a reset to the other side if the operation is cancelled, and fail
 /// with an error.
 ///
 /// Returns the number of bytes copied in case of success.
-async fn copy_to_quinn(
+async fn copy_to_noq(
     mut from: impl AsyncRead + Unpin,
-    mut send: quinn::SendStream,
+    mut send: noq::SendStream,
     token: CancellationToken,
 ) -> io::Result<u64> {
-    tracing::trace!("copying to quinn");
+    tracing::trace!("copying to noq");
     tokio::select! {
         res = tokio::io::copy(&mut from, &mut send) => {
             let size = res?;
@@ -267,14 +272,14 @@ async fn copy_to_quinn(
     }
 }
 
-/// Copy from a quinn stream to a writer.
+/// Copy from a noq stream to a writer.
 ///
 /// Will send stop to the other side if the operation is cancelled, and fail
 /// with an error.
 ///
 /// Returns the number of bytes copied in case of success.
-async fn copy_from_quinn(
-    mut recv: quinn::RecvStream,
+async fn copy_from_noq(
+    mut recv: noq::RecvStream,
     mut to: impl AsyncWrite + Unpin,
     token: CancellationToken,
 ) -> io::Result<u64> {
@@ -305,12 +310,14 @@ async fn create_endpoint(
     common: &CommonArgs,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder().secret_key(secret_key).alpns(alpns);
+    let mut builder = Endpoint::builder(presets::N0)
+        .secret_key(secret_key)
+        .alpns(alpns);
     if let Some(addr) = common.ipv4_addr {
-        builder = builder.bind_addr_v4(addr);
+        builder = builder.bind_addr(addr)?;
     }
     if let Some(addr) = common.ipv6_addr {
-        builder = builder.bind_addr_v6(addr);
+        builder = builder.bind_addr(addr)?;
     }
     let endpoint = builder.bind().await.anyerr()?;
     Ok(endpoint)
@@ -323,25 +330,25 @@ fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
     }
 }
 
-/// Bidirectionally forward data from a quinn stream and an arbitrary tokio
+/// Bidirectionally forward data from a noq stream and an arbitrary tokio
 /// reader/writer pair, aborting both sides when either one forwarder is done,
 /// or when control-c is pressed.
 async fn forward_bidi(
     from1: impl AsyncRead + Send + Sync + Unpin + 'static,
     to1: impl AsyncWrite + Send + Sync + Unpin + 'static,
-    from2: quinn::RecvStream,
-    to2: quinn::SendStream,
+    from2: noq::RecvStream,
+    to2: noq::SendStream,
 ) -> Result<()> {
     let token1 = CancellationToken::new();
     let token2 = token1.clone();
     let token3 = token1.clone();
     let forward_from_stdin = tokio::spawn(async move {
-        copy_to_quinn(from1, to2, token1.clone())
+        copy_to_noq(from1, to2, token1.clone())
             .await
             .map_err(cancel_token(token1))
     });
     let forward_to_stdout = tokio::spawn(async move {
-        copy_from_quinn(from2, to1, token2.clone())
+        copy_from_noq(from2, to1, token2.clone())
             .await
             .map_err(cancel_token(token2))
     });
@@ -434,7 +441,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let (mut s, r) = connection.open_bi().await.anyerr()?;
     tracing::info!("opened bidi stream to {}", remote_endpoint_id);
     // send the handshake unless we are using a custom alpn
-    // when using a custom alpn, evertyhing is up to the user
+    // when using a custom alpn, everything is up to the user
     if !args.common.is_custom_alpn() {
         // the connecting side must write first. we don't know if there will be something
         // on stdin, so just write a handshake.
@@ -498,7 +505,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             .await
             .std_context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
         // send the handshake unless we are using a custom alpn
-        // when using a custom alpn, evertyhing is up to the user
+        // when using a custom alpn, everything is up to the user
         if handshake {
             // the connecting side must write first. we don't know if there will be something
             // on stdin, so just write a handshake.
