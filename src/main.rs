@@ -2,6 +2,7 @@
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    path::PathBuf,
     time::Duration,
 };
 
@@ -13,17 +14,16 @@ use iroh::{
 };
 use iroh_persist::KeyRetriever;
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
+
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
+
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     select,
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
-#[cfg(unix)]
-use {
-    std::path::PathBuf,
-    tokio::net::{UnixListener, UnixStream},
-};
 
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
