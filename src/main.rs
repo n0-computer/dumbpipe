@@ -289,7 +289,7 @@ fn get_or_create_secret() -> Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).std_context("invalid secret"),
         Err(_) => {
-            let key = SecretKey::generate(&mut rand::rng());
+            let key = SecretKey::generate();
             eprintln!(
                 "using secret key {}",
                 data_encoding::HEXLOWER.encode(&key.to_bytes())

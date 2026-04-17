@@ -8,7 +8,7 @@ use std::{
 };
 
 use dumbpipe::EndpointTicket;
-use rand::Rng;
+use rand::RngExt;
 
 // binary path
 fn dumbpipe_bin() -> &'static str {
