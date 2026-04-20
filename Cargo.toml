@@ -27,8 +27,8 @@ data-encoding = "2.9.0"
 n0-error = "0.1"
 
 [dev-dependencies]
-duct = "0.13.6"
-nix = { version = "0.29", features = ["signal", "process"] }
+duct = "1.1.1"
+nix = { version = "0.31", features = ["signal", "process"] }
 rand = "0.10"
 tempfile = "3.8"
 
@@ -39,5 +39,3 @@ codegen-units = 1
 lto = true
 debug = "none"
 strip = true
-
-
