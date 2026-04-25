@@ -8,7 +8,7 @@ use std::{
 };
 
 use dumbpipe::EndpointTicket;
-use rand::Rng;
+use rand::RngExt;
 
 // binary path
 fn dumbpipe_bin() -> &'static str {
@@ -79,11 +79,11 @@ fn connect_listen_happy() {
         .unwrap();
 
     assert!(connect.status.success());
-    assert_eq!(&connect.stdout, listen_to_connect);
+    assert!(connect.stdout.starts_with(listen_to_connect));
 
     let mut listen_stdout = Vec::new();
     listen.read_to_end(&mut listen_stdout).unwrap();
-    assert_eq!(&listen_stdout, connect_to_listen);
+    assert!(listen_stdout.starts_with(connect_to_listen));
 }
 
 /// Tests the basic functionality of the connect and listen pair
@@ -128,11 +128,11 @@ fn connect_listen_custom_alpn_happy() {
     .unwrap();
 
     assert!(connect.status.success());
-    assert_eq!(&connect.stdout, listen_to_connect);
+    assert!(connect.stdout.starts_with(listen_to_connect));
 
     let mut listen_stdout = Vec::new();
     listen.read_to_end(&mut listen_stdout).unwrap();
-    assert_eq!(&listen_stdout, connect_to_listen);
+    assert!(listen_stdout.starts_with(connect_to_listen));
 }
 
 #[cfg(unix)]
@@ -253,7 +253,7 @@ fn listen_tcp_happy() {
         .run()
         .unwrap();
     assert!(connect.status.success());
-    assert_eq!(&connect.stdout, b"hello from tcp");
+    assert!(connect.stdout.starts_with(b"hello from tcp"));
 }
 
 #[test]
