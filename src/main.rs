@@ -418,6 +418,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         // stop accepting connections after the first successful one
         break;
     }
+    endpoint.close().await;
     Ok(())
 }
 
@@ -453,6 +454,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
         forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
     }
     tokio::io::stdout().flush().await.anyerr()?;
+    endpoint.close().await;
     Ok(())
 }
 
@@ -535,6 +537,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             }
         });
     }
+    endpoint.close().await;
     Ok(())
 }
 
@@ -626,6 +629,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
             }
         });
     }
+    endpoint.close().await;
     Ok(())
 }
 
@@ -736,6 +740,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
             }
         });
     }
+    endpoint.close().await;
     Ok(())
 }
 
@@ -855,6 +860,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         });
     }
 
+    endpoint.close().await;
     Ok(())
 }
 
