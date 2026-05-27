@@ -18,7 +18,7 @@ clap = { version = "4.4.10", features = ["derive"] }
 hex = "0.4.3"
 iroh = { version = "=1.0.0-rc.0", default-features = false, features = ["tls-ring"] }
 iroh-tickets = "=1.0.0-rc.0"
-noq = "=1.0.0-rc.0"
+noq = "=1.0.0-rc.1"
 tokio = { version = "1.34.0", features = ["full"] }
 tokio-util = "0.7.10"
 tracing = "0.1.40"
@@ -39,3 +39,9 @@ codegen-units = 1
 lto = true
 debug = "none"
 strip = true
+
+
+[patch.crates-io]
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "feat-rc-1" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "feat-rc-1" }
+iroh-tickets = { git = "https://github.com/n0-computer/iroh-tickets", branch = "feat-iroh-rc-1" }
