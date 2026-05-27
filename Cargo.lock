@@ -1555,8 +1555,9 @@ dependencies = [
 
 [[package]]
 name = "iroh"
-version = "1.0.0-rc.0"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-rc-1#b37c6edace5eb4ce761e86f38dab6d4bb85b589b"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef865dc2d11a19fe670ff217b68ffc3b511bddf473dc3a3e120090b9f691803"
 dependencies = [
  "backon",
  "blake3",
@@ -1606,8 +1607,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-base"
-version = "1.0.0-rc.0"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-rc-1#b37c6edace5eb4ce761e86f38dab6d4bb85b589b"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af93d67701c00c504982154569192ad384738c0450ba1196930314b955100552"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -1627,8 +1629,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-dns"
-version = "1.0.0-rc.0"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-rc-1#b37c6edace5eb4ce761e86f38dab6d4bb85b589b"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de4112c91eb64094d77df9d3112606dcf7ff216421afccd2dc762fda5a7b2879"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -1677,8 +1680,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-relay"
-version = "1.0.0-rc.0"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-rc-1#b37c6edace5eb4ce761e86f38dab6d4bb85b589b"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a70030b9e71c1183bd4f88fbdbebfa1af2a5be549dd6f20a1e8ac3cd0202ee9d"
 dependencies = [
  "blake3",
  "bytes",
@@ -1722,8 +1726,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-tickets"
-version = "1.0.0-rc.0"
-source = "git+https://github.com/n0-computer/iroh-tickets?branch=feat-iroh-rc-1#1a7c3968ce891e8c50951e91f37a784c998149a0"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5d4051ac9825cd834d88377dab71c1d9d483b65e9740029b2d624cc17ac58d"
 dependencies = [
  "data-encoding",
  "derive_more",
