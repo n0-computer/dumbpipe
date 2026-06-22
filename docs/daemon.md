@@ -65,6 +65,25 @@ restarts. The secret key is resolved in this order:
 2. `<data_dir>/dumbpipe/daemon/secret.key`, a 32-byte lowercase hex key.
 3. Otherwise a fresh key is generated and written to `secret.key` for next time.
 
+## Output
+
+On startup, after the endpoint comes online, the daemon prints to stdout:
+
+- its endpoint id, as hex, on the first line;
+- its ticket on the second line, in the same format the `remote` field accepts,
+  so it can be pasted into a connecting daemon's config;
+- one line per configured `accept` backend, as `accept <name> -> <addr>`.
+
+```
+f2e16a92c17a40ceb7bbb6e6f216ad98f59f7708f32ff24bf8ed6335c908bb1d
+endpointadzoc2usyf5ebtvxxo3on4qwvwmplh3xbdzs74sl7dwwgnojbc5r2ay...
+accept web -> localhost:3000
+accept ssh -> localhost:22
+```
+
+The id and the ticket are both valid `remote` values; the ticket additionally
+carries the relay and address hints.
+
 ## Named handshake
 
 A single endpoint multiplexes several tunnels, so each stream must say which
@@ -118,7 +137,7 @@ addr = "localhost:22"
 
 ```
 dumbpipe daemon -c server.toml
-# logs: daemon endpoint bound endpoint_id=<id>
+# prints the endpoint id, a ticket, and the accept backends
 ```
 
 On the client machine, `client.toml` (using the server's endpoint id):

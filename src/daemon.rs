@@ -160,8 +160,16 @@ pub(crate) async fn run(args: DaemonArgs) -> Result<()> {
         warn!("config has no [[connect]] or [[accept]] entries");
     }
 
+    // Advertise this daemon's identity on stdout. The id (hex) and the ticket
+    // are both valid `remote` values for a connecting daemon's config; the
+    // ticket also carries the relay and address hints. Printed after `online`
+    // so the ticket includes the home relay.
+    println!("short addr: {}", endpoint.id());
+    println!(" long addr: {}", EndpointTicket::new(endpoint.addr()));
+
     // Route incoming streams by name to a backend address. Reject duplicate
     // names up front: a duplicate would silently shadow an earlier backend.
+    // List each configured accept backend on stdout.
     let mut routes: HashMap<String, String> = HashMap::new();
     for accept in &config.accept {
         if routes
@@ -170,7 +178,7 @@ pub(crate) async fn run(args: DaemonArgs) -> Result<()> {
         {
             bail_any!("duplicate accept name {:?}", accept.name);
         }
-        info!(name = %accept.name, addr = %accept.addr, "accept route");
+        println!("accept {} -> {}", accept.name, accept.addr);
     }
 
     let token = CancellationToken::new();
