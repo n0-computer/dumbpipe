@@ -890,8 +890,16 @@ async fn generate_ticket() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
     let args = Args::parse();
+    // The daemon is a long-running process, so give it a useful default log
+    // filter when RUST_LOG is unset. Other subcommands keep the quiet default.
+    let filter = match (std::env::var_os("RUST_LOG"), &args.command) {
+        (None, Commands::Daemon(_)) => {
+            tracing_subscriber::EnvFilter::new("dumbpipe=info,iroh=info")
+        }
+        _ => tracing_subscriber::EnvFilter::from_default_env(),
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let res = match args.command {
         Commands::GenerateTicket => generate_ticket().await,
         Commands::Listen(args) => listen_stdio(args).await,

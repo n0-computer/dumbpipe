@@ -151,24 +151,24 @@ The `dumbpipe daemon` subcommand runs any number of incoming and outgoing
 tunnels over a single endpoint, driven by a TOML config file. Each `connect`
 entry exposes a local TCP port that forwards to a remote endpoint under a name,
 and each `accept` entry forwards incoming named streams to a local TCP backend.
+Tunnels can be protected with a shared token.
 
-```toml
-[[connect]]
-remote = "<endpoint-id-or-ticket>"
-name   = "web"
-addr   = "127.0.0.1:8080"
-
-[[accept]]
-name = "web"
-addr = "localhost:3000"
-```
+Build the config with the `accept` and `connect` subcommands (or edit the TOML
+by hand):
 
 ```
-dumbpipe daemon -c config.toml
+# On the server: expose a backend, protected by a generated token.
+dumbpipe daemon accept web localhost:3000 --secure
+dumbpipe daemon            # run it; prints the endpoint id and a ticket
+
+# On the client: forward a local port to the server's "web" tunnel.
+dumbpipe daemon connect <server-id-or-ticket>:web 127.0.0.1:8080 --token <token>
+dumbpipe daemon
 ```
 
-See [docs/daemon.md](docs/daemon.md) for the config format, key handling, and
-details.
+By default the daemon watches its config file and applies changes (added or
+removed tunnels) while running. See [docs/daemon.md](docs/daemon.md) for the
+config format, tokens, reloading, key handling, and more.
 
 ## Combining Listeners
 

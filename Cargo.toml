@@ -29,11 +29,14 @@ n0-error = "1.0.0"
 dirs = "6.0.0"
 toml = "0.9.5"
 serde = { version = "1.0.228", features = ["derive"] }
+postcard = { version = "1.1.1", features = ["use-std"] }
+notify = "8.0.0"
+arc-swap = "1.7.1"
+rand = "0.10"
 
 [dev-dependencies]
 duct = "1.1.1"
 nix = { version = "0.31", features = ["signal", "process"] }
-rand = "0.10"
 tempfile = "3.8"
 
 [profile.release]
