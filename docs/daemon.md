@@ -116,9 +116,14 @@ dumbpipe daemon uninstall                 # remove it
 
 `install` records the absolute config path so the service finds it regardless of
 its working directory, and enables start at login. The service runs `daemon run`
-in the foreground under the service manager. User-level services are not
-supported on every platform; `install` fails with an explanation where they are
-not.
+in the foreground under the service manager. No elevated permissions are
+required: the service is installed at the user level (a systemd user unit, a
+launchd user agent, and so on).
+
+User-level services are not supported on every platform; failures print the
+underlying service-manager error. On macOS in particular, launchd only loads a
+user agent inside a GUI login session, so `install` over SSH fails: run it from a
+Terminal in the desktop session.
 
 ## Reloading
 

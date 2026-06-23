@@ -920,7 +920,9 @@ async fn main() -> Result<()> {
     match res {
         Ok(()) => std::process::exit(0),
         Err(e) => {
-            eprintln!("error: {e}");
+            // The alternate form prints the full source chain, so wrapped errors
+            // (e.g. the underlying launchctl/systemctl failure) stay visible.
+            eprintln!("error: {e:#}");
             std::process::exit(1)
         }
     }

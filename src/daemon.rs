@@ -292,24 +292,32 @@ fn cmd_install(config_path: &Path) -> Result<()> {
     // working directory it is launched in.
     let config = std::path::absolute(config_path)
         .with_std_context(|_| format!("could not resolve config path {}", config_path.display()))?;
-    manager
-        .install(ServiceInstallCtx {
-            label: label.clone(),
-            program,
-            args: vec![
-                OsString::from("daemon"),
-                OsString::from("run"),
-                OsString::from("-c"),
-                config.clone().into_os_string(),
-            ],
-            contents: None,
-            username: None,
-            working_directory: None,
-            environment: None,
-            autostart: true,
-            restart_policy: RestartPolicy::default(),
-        })
-        .std_context("failed to install service")?;
+    let result = manager.install(ServiceInstallCtx {
+        label: label.clone(),
+        program,
+        args: vec![
+            OsString::from("daemon"),
+            OsString::from("run"),
+            OsString::from("-c"),
+            config.clone().into_os_string(),
+        ],
+        contents: None,
+        username: None,
+        working_directory: None,
+        environment: None,
+        autostart: true,
+        restart_policy: RestartPolicy::default(),
+    });
+    if result.is_err() && cfg!(target_os = "macos") {
+        // A user-level launchd agent only loads in a GUI login session, which an
+        // SSH session lacks. No elevated permissions are needed.
+        eprintln!(
+            "note: a user service uses launchd, which only loads agents in a GUI \
+             login session that an SSH session does not have. Run `dumbpipe daemon \
+             install` from a Terminal in the desktop session; sudo is not required."
+        );
+    }
+    result.std_context("failed to install service")?;
     println!("installed dumbpipe daemon service {label}");
     println!("config: {}", config.display());
     println!("start it with: dumbpipe daemon start");
