@@ -159,16 +159,18 @@ by hand):
 ```
 # On the server: expose a backend, protected by a generated token.
 dumbpipe daemon accept web localhost:3000 --secure
-dumbpipe daemon            # run it; prints the endpoint id and a ticket
+dumbpipe daemon run        # run it; prints the endpoint id and a ticket
 
 # On the client: forward a local port to the server's "web" tunnel.
 dumbpipe daemon connect <server-id-or-ticket>:web 127.0.0.1:8080 --token <token>
-dumbpipe daemon
+dumbpipe daemon run
 ```
 
-By default the daemon watches its config file and applies changes (added or
-removed tunnels) while running. See [docs/daemon.md](docs/daemon.md) for the
-config format, tokens, reloading, key handling, and more.
+`daemon run` runs in the foreground; `daemon install` / `start` / `stop` /
+`uninstall` manage it as a user-level service instead. By default the daemon
+watches its config file and applies changes (added or removed tunnels) while
+running. See [docs/daemon.md](docs/daemon.md) for the config format, tokens,
+reloading, the service commands, key handling, and more.
 
 ## Combining Listeners
 

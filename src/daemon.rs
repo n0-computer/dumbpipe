@@ -15,6 +15,7 @@
 
 use std::{
     collections::HashMap,
+    ffi::OsString,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -29,6 +30,10 @@ use iroh_util::connection_pool::{ConnectionPool, ConnectionRef, Options};
 use n0_error::{bail_any, ensure_any, Result, StdResultExt};
 use notify::Watcher;
 use serde::{Deserialize, Serialize};
+use service_manager::{
+    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
+    ServiceStopCtx, ServiceUninstallCtx,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -73,11 +78,18 @@ const POOL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// burst of filesystem events a single save produces.
 const RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 
+/// The label identifying the daemon service to the platform service manager.
+///
+/// A single-component label keeps the systemd unit named `dumbpipe.service`
+/// rather than the `{organization}-{application}` form a qualified label yields.
+const SERVICE_LABEL: &str = "dumbpipe";
+
 /// Arguments for the `daemon` subcommand.
 #[derive(Parser, Debug)]
+#[command(arg_required_else_help = true)]
 pub struct DaemonArgs {
     #[clap(subcommand)]
-    pub command: Option<DaemonCommand>,
+    pub command: DaemonCommand,
 
     /// Path to the daemon config file.
     ///
@@ -90,11 +102,23 @@ pub struct DaemonArgs {
     pub common: CommonArgs,
 }
 
-/// The daemon subcommands. `start` is the default when none is given.
+/// The daemon subcommands.
 #[derive(Subcommand, Debug)]
 pub enum DaemonCommand {
-    /// Run the daemon. This is the default when no subcommand is given.
+    /// Install the daemon as a user-level service.
+    Install,
+
+    /// Stop and remove the daemon service.
+    Uninstall,
+
+    /// Start the installed daemon service.
     Start,
+
+    /// Stop the running daemon service.
+    Stop,
+
+    /// Run the daemon in the foreground.
+    Run,
 
     /// Add an accept tunnel to the config file.
     Accept(AcceptCmd),
@@ -227,12 +251,104 @@ pub(crate) async fn run(args: DaemonArgs) -> Result<()> {
         Some(path) => path,
         None => daemon_dir()?.join("daemon.toml"),
     };
-    match args.command.unwrap_or(DaemonCommand::Start) {
-        DaemonCommand::Start => start(config_path, args.common).await,
+    match args.command {
+        DaemonCommand::Install => cmd_install(&config_path),
+        DaemonCommand::Uninstall => cmd_uninstall(),
+        DaemonCommand::Start => cmd_service_start(),
+        DaemonCommand::Stop => cmd_service_stop(),
+        DaemonCommand::Run => run_foreground(config_path, args.common).await,
         DaemonCommand::Accept(cmd) => cmd_accept(&config_path, cmd),
         DaemonCommand::Connect(cmd) => cmd_connect(&config_path, cmd),
         DaemonCommand::Show => cmd_show(&config_path),
     }
+}
+
+/// Builds the platform service manager, set to manage user-level services.
+fn service_manager() -> Result<Box<dyn ServiceManager>> {
+    let mut manager =
+        <dyn ServiceManager>::native().std_context("no supported service manager found")?;
+    manager
+        .set_level(ServiceLevel::User)
+        .std_context("user-level services are not supported on this platform")?;
+    Ok(manager)
+}
+
+/// The service label for the daemon.
+fn service_label() -> ServiceLabel {
+    SERVICE_LABEL.parse().expect("service label is valid")
+}
+
+/// Installs the daemon as a user-level service that runs `daemon run`.
+fn cmd_install(config_path: &Path) -> Result<()> {
+    let manager = service_manager()?;
+    let label = service_label();
+    let program =
+        std::env::current_exe().std_context("could not determine the dumbpipe binary path")?;
+    // Pass an absolute config path so the service finds it regardless of the
+    // working directory it is launched in.
+    let config = std::path::absolute(config_path)
+        .with_std_context(|_| format!("could not resolve config path {}", config_path.display()))?;
+    manager
+        .install(ServiceInstallCtx {
+            label: label.clone(),
+            program,
+            args: vec![
+                OsString::from("daemon"),
+                OsString::from("run"),
+                OsString::from("-c"),
+                config.clone().into_os_string(),
+            ],
+            contents: None,
+            username: None,
+            working_directory: None,
+            environment: None,
+            autostart: true,
+            restart_policy: RestartPolicy::default(),
+        })
+        .std_context("failed to install service")?;
+    println!("installed dumbpipe daemon service {label}");
+    println!("config: {}", config.display());
+    println!("start it with: dumbpipe daemon start");
+    Ok(())
+}
+
+/// Stops and removes the daemon service.
+fn cmd_uninstall() -> Result<()> {
+    let manager = service_manager()?;
+    let label = service_label();
+    manager
+        .uninstall(ServiceUninstallCtx {
+            label: label.clone(),
+        })
+        .std_context("failed to uninstall service")?;
+    println!("uninstalled dumbpipe daemon service {label}");
+    Ok(())
+}
+
+/// Starts the installed daemon service.
+fn cmd_service_start() -> Result<()> {
+    let manager = service_manager()?;
+    let label = service_label();
+    manager
+        .start(ServiceStartCtx {
+            label: label.clone(),
+        })
+        .std_context("failed to start service")?;
+    println!("started dumbpipe daemon service {label}");
+    Ok(())
+}
+
+/// Stops the running daemon service.
+fn cmd_service_stop() -> Result<()> {
+    let manager = service_manager()?;
+    let label = service_label();
+    manager
+        .stop(ServiceStopCtx {
+            label: label.clone(),
+        })
+        .std_context("failed to stop service")?;
+    println!("stopped dumbpipe daemon service {label}");
+    Ok(())
 }
 
 /// Prints the configured connect and accept tunnels.
@@ -318,8 +434,8 @@ fn cmd_connect(config_path: &Path, cmd: ConnectCmd) -> Result<()> {
     Ok(())
 }
 
-/// Runs the daemon until interrupted with ctrl-c.
-async fn start(config_path: PathBuf, common: CommonArgs) -> Result<()> {
+/// Runs the daemon in the foreground until interrupted with ctrl-c.
+async fn run_foreground(config_path: PathBuf, common: CommonArgs) -> Result<()> {
     let dir = daemon_dir()?;
     // Create an empty config rather than failing when none exists yet.
     if !config_path.exists() {

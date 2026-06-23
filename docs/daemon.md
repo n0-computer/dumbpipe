@@ -7,24 +7,28 @@ one daemon serves any number of incoming and outgoing tunnels from one endpoint
 (one identity).
 
 ```
-dumbpipe daemon [-c <config.toml>] [start]
+dumbpipe daemon [-c <config.toml>] run
+dumbpipe daemon [-c <config.toml>] install | uninstall | start | stop
 dumbpipe daemon [-c <config.toml>] accept  <name> <addr> [--token <t>] [--secure]
 dumbpipe daemon [-c <config.toml>] connect <remote>:<name> <addr> [--token <t>]
 dumbpipe daemon [-c <config.toml>] show
 ```
 
-`start` runs the daemon and is the default when no subcommand is given, so
-`dumbpipe daemon` and `dumbpipe daemon start` are the same. The `accept` and
-`connect` subcommands do not run anything; they edit the config file. `show`
-prints the configured tunnels without running anything.
+A subcommand is required; `dumbpipe daemon` with none prints help.
+
+- `run` runs the daemon in the foreground.
+- `install` / `uninstall` / `start` / `stop` manage the daemon as a user-level
+  service (see [Running as a service](#running-as-a-service)).
+- `accept` / `connect` edit the config file and do not run anything.
+- `show` prints the configured tunnels.
 
 ## Config file
 
 The config path is taken from `-c/--config` if given, and otherwise defaults to
 `<data_dir>/dumbpipe/daemon/daemon.toml`, where `<data_dir>` is the platform
 data directory (`~/.local/share` on Linux, `~/Library/Application Support` on
-macOS; see the [`dirs`](https://crates.io/crates/dirs) crate). `start` creates
-an empty config there if none exists rather than failing.
+macOS; see the [`dirs`](https://crates.io/crates/dirs) crate). `run` creates an
+empty config there if none exists rather than failing.
 
 ```toml
 # Watch this file and apply changes while running (see Reloading).
@@ -94,6 +98,26 @@ dumbpipe daemon connect <remote-id-or-ticket>:web 127.0.0.1:8080 --token MZUW4Z3
 
 `--secure` generates a random token of 16 base32-encoded bytes and prints it.
 `--secure` and `--token` are mutually exclusive.
+
+## Running as a service
+
+The daemon can install itself as a user-level service via
+[`service-manager`](https://crates.io/crates/service-manager), which uses the
+platform's native service manager (systemd user units on Linux, launchd on
+macOS, and so on):
+
+```
+dumbpipe daemon -c config.toml install   # install a service that runs `daemon run -c <config>`
+dumbpipe daemon start                     # start it
+dumbpipe daemon stop                      # stop it
+dumbpipe daemon uninstall                 # remove it
+```
+
+`install` records the absolute config path so the service finds it regardless of
+its working directory, and enables start at login. The service runs `daemon run`
+in the foreground under the service manager. User-level services are not
+supported on every platform; `install` fails with an explanation where they are
+not.
 
 ## Reloading
 
@@ -211,7 +235,7 @@ On the server machine:
 dumbpipe daemon -c server.toml accept web localhost:3000
 dumbpipe daemon -c server.toml accept ssh localhost:22 --secure
 # token: MZUW4Z3FOJSWG5DBNVSXG43F
-dumbpipe daemon -c server.toml
+dumbpipe daemon -c server.toml run
 # short addr: <id>
 #  long addr: <ticket>
 ```
@@ -221,7 +245,7 @@ On the client machine, using the server's id or ticket:
 ```
 dumbpipe daemon -c client.toml connect <server>:web 127.0.0.1:8080
 dumbpipe daemon -c client.toml connect <server>:ssh 127.0.0.1:2222 --token MZUW4Z3FOJSWG5DBNVSXG43F
-dumbpipe daemon -c client.toml
+dumbpipe daemon -c client.toml run
 ```
 
 The client can now reach the server's web server at `127.0.0.1:8080` and its SSH
