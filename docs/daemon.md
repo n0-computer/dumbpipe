@@ -120,10 +120,17 @@ in the foreground under the service manager. No elevated permissions are
 required: the service is installed at the user level (a systemd user unit, a
 launchd user agent, and so on).
 
+On macOS the commands also work over SSH. The default `launchctl load` path
+targets the GUI login session, which an SSH connection does not have, so the
+commands fall back to managing the agent in the per-user (Background) launchd
+domain (`user/<uid>`) that an SSH session does have. This still needs no elevated
+permissions. One caveat: a per-user agent runs while that user has a session and
+is not guaranteed to restart after a reboot with nobody logged in; for
+unconditional restart on a headless machine, a system-level daemon is required,
+which does need elevated permissions to install.
+
 User-level services are not supported on every platform; failures print the
-underlying service-manager error. On macOS in particular, launchd only loads a
-user agent inside a GUI login session, so `install` over SSH fails: run it from a
-Terminal in the desktop session.
+underlying service-manager error.
 
 ## Reloading
 

@@ -292,7 +292,7 @@ fn cmd_install(config_path: &Path) -> Result<()> {
     // working directory it is launched in.
     let config = std::path::absolute(config_path)
         .with_std_context(|_| format!("could not resolve config path {}", config_path.display()))?;
-    let result = manager.install(ServiceInstallCtx {
+    let installed = manager.install(ServiceInstallCtx {
         label: label.clone(),
         program,
         args: vec![
@@ -308,16 +308,12 @@ fn cmd_install(config_path: &Path) -> Result<()> {
         autostart: true,
         restart_policy: RestartPolicy::default(),
     });
-    if result.is_err() && cfg!(target_os = "macos") {
-        // A user-level launchd agent only loads in a GUI login session, which an
-        // SSH session lacks. No elevated permissions are needed.
-        eprintln!(
-            "note: a user service uses launchd, which only loads agents in a GUI \
-             login session that an SSH session does not have. Run `dumbpipe daemon \
-             install` from a Terminal in the desktop session; sudo is not required."
-        );
-    }
-    result.std_context("failed to install service")?;
+    // service-manager loads the agent via `launchctl load`, which aborts over
+    // SSH because that targets the GUI domain. The plist is written before that
+    // step, so fall back to bootstrapping it into the per-user domain.
+    #[cfg(target_os = "macos")]
+    let installed = installed.or_else(|_| macos::install(&label));
+    installed.std_context("failed to install service")?;
     println!("installed dumbpipe daemon service {label}");
     println!("config: {}", config.display());
     println!("start it with: dumbpipe daemon start");
@@ -328,11 +324,12 @@ fn cmd_install(config_path: &Path) -> Result<()> {
 fn cmd_uninstall() -> Result<()> {
     let manager = service_manager()?;
     let label = service_label();
-    manager
-        .uninstall(ServiceUninstallCtx {
-            label: label.clone(),
-        })
-        .std_context("failed to uninstall service")?;
+    let removed = manager.uninstall(ServiceUninstallCtx {
+        label: label.clone(),
+    });
+    #[cfg(target_os = "macos")]
+    let removed = removed.or_else(|_| macos::uninstall(&label));
+    removed.std_context("failed to uninstall service")?;
     println!("uninstalled dumbpipe daemon service {label}");
     Ok(())
 }
@@ -341,11 +338,12 @@ fn cmd_uninstall() -> Result<()> {
 fn cmd_service_start() -> Result<()> {
     let manager = service_manager()?;
     let label = service_label();
-    manager
-        .start(ServiceStartCtx {
-            label: label.clone(),
-        })
-        .std_context("failed to start service")?;
+    let started = manager.start(ServiceStartCtx {
+        label: label.clone(),
+    });
+    #[cfg(target_os = "macos")]
+    let started = started.or_else(|_| macos::start(&label));
+    started.std_context("failed to start service")?;
     println!("started dumbpipe daemon service {label}");
     Ok(())
 }
@@ -354,11 +352,12 @@ fn cmd_service_start() -> Result<()> {
 fn cmd_service_stop() -> Result<()> {
     let manager = service_manager()?;
     let label = service_label();
-    manager
-        .stop(ServiceStopCtx {
-            label: label.clone(),
-        })
-        .std_context("failed to stop service")?;
+    let stopped = manager.stop(ServiceStopCtx {
+        label: label.clone(),
+    });
+    #[cfg(target_os = "macos")]
+    let stopped = stopped.or_else(|_| macos::stop(&label));
+    stopped.std_context("failed to stop service")?;
     println!("stopped dumbpipe daemon service {label}");
     Ok(())
 }
@@ -367,9 +366,17 @@ fn cmd_service_stop() -> Result<()> {
 fn cmd_service_status() -> Result<()> {
     let manager = service_manager()?;
     let label = service_label();
-    let status = manager
-        .status(ServiceStatusCtx { label })
-        .std_context("failed to query service status")?;
+    let status = manager.status(ServiceStatusCtx {
+        label: label.clone(),
+    });
+    // service-manager queries the GUI domain and reports a user-domain service as
+    // not installed, so on macOS also check the per-user domain.
+    #[cfg(target_os = "macos")]
+    let status = match status {
+        Ok(ServiceStatus::NotInstalled) | Err(_) => macos::status(&label),
+        installed => installed,
+    };
+    let status = status.std_context("failed to query service status")?;
     match status {
         ServiceStatus::NotInstalled => println!("not installed"),
         ServiceStatus::Running => println!("running"),
@@ -377,6 +384,120 @@ fn cmd_service_status() -> Result<()> {
         ServiceStatus::Stopped(None) => println!("stopped"),
     }
     Ok(())
+}
+
+/// macOS fallbacks that manage the launchd agent in the per-user (Background)
+/// domain.
+///
+/// An SSH session has the `user/<uid>` domain but not the `gui/<uid>` domain
+/// that `launchctl load` (used by service-manager) targets, so the standard
+/// path aborts over SSH. These run the equivalent modern, domain-targeted
+/// `launchctl` commands against `user/<uid>`. No elevated permissions are
+/// required.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::{io, path::PathBuf, process::Command};
+
+    use service_manager::{ServiceLabel, ServiceStatus};
+
+    /// Runs `launchctl` with `args`, turning a non-zero exit into an error that
+    /// carries the command's stderr.
+    fn launchctl(args: &[&str]) -> io::Result<()> {
+        let output = Command::new("launchctl").args(args).output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "launchctl {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+
+    /// Returns the current user id via `id -u`.
+    fn uid() -> io::Result<u32> {
+        let output = Command::new("id").arg("-u").output()?;
+        if !output.status.success() {
+            return Err(io::Error::other("failed to run `id -u`"));
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .map_err(|_| io::Error::other("could not parse the user id"))
+    }
+
+    /// The path of the launchd agent plist that service-manager writes.
+    fn plist_path(label: &ServiceLabel) -> io::Result<PathBuf> {
+        let home = dirs::home_dir()
+            .ok_or_else(|| io::Error::other("could not find the home directory"))?;
+        Ok(home
+            .join("Library")
+            .join("LaunchAgents")
+            .join(format!("{}.plist", label.to_qualified_name())))
+    }
+
+    /// The `user/<uid>/<label>` service target.
+    fn target(label: &ServiceLabel, uid: u32) -> String {
+        format!("user/{uid}/{}", label.to_qualified_name())
+    }
+
+    /// Bootstraps the already-written plist into the per-user domain, left
+    /// disabled so it does not start until [`start`].
+    pub fn install(label: &ServiceLabel) -> io::Result<()> {
+        let uid = uid()?;
+        let plist = plist_path(label)?;
+        // Clear any half-loaded instance from the failed `launchctl load`.
+        let _ = launchctl(&["bootout", &target(label, uid)]);
+        launchctl(&[
+            "bootstrap",
+            &format!("user/{uid}"),
+            &plist.to_string_lossy(),
+        ])?;
+        launchctl(&["disable", &target(label, uid)])
+    }
+
+    /// Enables and starts the service.
+    pub fn start(label: &ServiceLabel) -> io::Result<()> {
+        let uid = uid()?;
+        let target = target(label, uid);
+        launchctl(&["enable", &target])?;
+        launchctl(&["kickstart", "-k", &target])
+    }
+
+    /// Stops the service and disables it so its keep-alive does not restart it.
+    pub fn stop(label: &ServiceLabel) -> io::Result<()> {
+        let uid = uid()?;
+        let target = target(label, uid);
+        launchctl(&["disable", &target])?;
+        // The service may already be stopped, so ignore a kill failure.
+        let _ = launchctl(&["kill", "SIGTERM", &target]);
+        Ok(())
+    }
+
+    /// Removes the service from the domain and deletes its plist.
+    pub fn uninstall(label: &ServiceLabel) -> io::Result<()> {
+        let uid = uid()?;
+        let _ = launchctl(&["bootout", &target(label, uid)]);
+        std::fs::remove_file(plist_path(label)?)
+    }
+
+    /// Reports the service status from the per-user domain.
+    pub fn status(label: &ServiceLabel) -> io::Result<ServiceStatus> {
+        let uid = uid()?;
+        let output = Command::new("launchctl")
+            .args(["print", &target(label, uid)])
+            .output()?;
+        if !output.status.success() {
+            return Ok(ServiceStatus::NotInstalled);
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        if text.contains("state = running") {
+            Ok(ServiceStatus::Running)
+        } else {
+            Ok(ServiceStatus::Stopped(None))
+        }
+    }
 }
 
 /// Prints the configured connect and accept tunnels.
