@@ -8,7 +8,7 @@ one daemon serves any number of incoming and outgoing tunnels from one endpoint
 
 ```
 dumbpipe daemon [-c <config.toml>] run
-dumbpipe daemon [-c <config.toml>] install | uninstall | start | stop
+dumbpipe daemon [-c <config.toml>] install | uninstall | start | stop | status
 dumbpipe daemon [-c <config.toml>] accept  <name> <addr> [--token <t>] [--secure]
 dumbpipe daemon [-c <config.toml>] connect <remote>:<name> <addr> [--token <t>]
 dumbpipe daemon [-c <config.toml>] show
@@ -17,8 +17,8 @@ dumbpipe daemon [-c <config.toml>] show
 A subcommand is required; `dumbpipe daemon` with none prints help.
 
 - `run` runs the daemon in the foreground.
-- `install` / `uninstall` / `start` / `stop` manage the daemon as a user-level
-  service (see [Running as a service](#running-as-a-service)).
+- `install` / `uninstall` / `start` / `stop` / `status` manage the daemon as a
+  user-level service (see [Running as a service](#running-as-a-service)).
 - `accept` / `connect` edit the config file and do not run anything.
 - `show` prints the configured tunnels.
 
@@ -109,6 +109,7 @@ macOS, and so on):
 ```
 dumbpipe daemon -c config.toml install   # install a service that runs `daemon run -c <config>`
 dumbpipe daemon start                     # start it
+dumbpipe daemon status                    # not installed | stopped | running
 dumbpipe daemon stop                      # stop it
 dumbpipe daemon uninstall                 # remove it
 ```

@@ -32,7 +32,7 @@ use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use service_manager::{
     RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
-    ServiceStopCtx, ServiceUninstallCtx,
+    ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -116,6 +116,9 @@ pub enum DaemonCommand {
 
     /// Stop the running daemon service.
     Stop,
+
+    /// Show the daemon service status.
+    Status,
 
     /// Run the daemon in the foreground.
     Run,
@@ -256,6 +259,7 @@ pub(crate) async fn run(args: DaemonArgs) -> Result<()> {
         DaemonCommand::Uninstall => cmd_uninstall(),
         DaemonCommand::Start => cmd_service_start(),
         DaemonCommand::Stop => cmd_service_stop(),
+        DaemonCommand::Status => cmd_service_status(),
         DaemonCommand::Run => run_foreground(config_path, args.common).await,
         DaemonCommand::Accept(cmd) => cmd_accept(&config_path, cmd),
         DaemonCommand::Connect(cmd) => cmd_connect(&config_path, cmd),
@@ -348,6 +352,22 @@ fn cmd_service_stop() -> Result<()> {
         })
         .std_context("failed to stop service")?;
     println!("stopped dumbpipe daemon service {label}");
+    Ok(())
+}
+
+/// Prints the daemon service status.
+fn cmd_service_status() -> Result<()> {
+    let manager = service_manager()?;
+    let label = service_label();
+    let status = manager
+        .status(ServiceStatusCtx { label })
+        .std_context("failed to query service status")?;
+    match status {
+        ServiceStatus::NotInstalled => println!("not installed"),
+        ServiceStatus::Running => println!("running"),
+        ServiceStatus::Stopped(Some(reason)) => println!("stopped: {reason}"),
+        ServiceStatus::Stopped(None) => println!("stopped"),
+    }
     Ok(())
 }
 
