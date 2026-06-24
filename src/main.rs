@@ -9,6 +9,7 @@ use std::{
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{
+    address_lookup::MemoryLookup,
     endpoint::{presets, Accepting},
     Endpoint, EndpointAddr, SecretKey,
 };
@@ -24,6 +25,8 @@ use {
     std::path::PathBuf,
     tokio::net::{UnixListener, UnixStream},
 };
+
+mod daemon;
 
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -104,6 +107,14 @@ pub enum Commands {
     /// As far as the endpoint is concerned, this is connecting. But it is
     /// listening on a Unix socket for which you have to specify the path.
     ConnectUnix(ConnectUnixArgs),
+
+    /// Run many named tunnels over a single endpoint, driven by a config file.
+    ///
+    /// Reads a TOML config with `[[connect]]` and `[[accept]]` entries. Each
+    /// `connect` exposes a local TCP port that forwards to a remote endpoint
+    /// under a name; each `accept` forwards incoming named streams to a local
+    /// TCP backend selected by name.
+    Daemon(daemon::DaemonArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -300,14 +311,21 @@ fn get_or_create_secret() -> Result<SecretKey> {
 }
 
 /// Create a new iroh endpoint.
-async fn create_endpoint(
+///
+/// When `address_lookup` is set, it is added alongside the default discovery so
+/// connecting by endpoint id can use statically configured address hints.
+pub(crate) async fn create_endpoint(
     secret_key: SecretKey,
     common: &CommonArgs,
     alpns: Vec<Vec<u8>>,
+    address_lookup: Option<MemoryLookup>,
 ) -> Result<Endpoint> {
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(alpns);
+    if let Some(address_lookup) = address_lookup {
+        builder = builder.address_lookup(address_lookup);
+    }
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr(addr)?;
     }
@@ -328,7 +346,7 @@ fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
 /// Bidirectionally forward data from a noq stream and an arbitrary tokio
 /// reader/writer pair, aborting both sides when either one forwarder is done,
 /// or when control-c is pressed.
-async fn forward_bidi(
+pub(crate) async fn forward_bidi(
     from1: impl AsyncRead + Send + Sync + Unpin + 'static,
     to1: impl AsyncWrite + Send + Sync + Unpin + 'static,
     from2: noq::RecvStream,
@@ -359,7 +377,8 @@ async fn forward_bidi(
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
+    let endpoint =
+        create_endpoint(secret_key, &args.common, vec![args.common.alpn()?], None).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
     if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
@@ -423,7 +442,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
+    let endpoint = create_endpoint(secret_key, &args.common, vec![], None).await?;
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
     // connect to the remote, try only once
@@ -463,7 +482,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .to_socket_addrs()
         .std_context(format!("invalid host string {}", args.addr))?;
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![])
+    let endpoint = create_endpoint(secret_key, &args.common, vec![], None)
         .await
         .std_context("unable to bind endpoint")?;
     tracing::info!("tcp listening on {:?}", addrs);
@@ -545,7 +564,8 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Err(e) => bail_any!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
+    let endpoint =
+        create_endpoint(secret_key, &args.common, vec![args.common.alpn()?], None).await?;
     // wait for the endpoint to figure out its address before making a ticket
     if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
@@ -643,7 +663,8 @@ fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
+    let endpoint =
+        create_endpoint(secret_key, &args.common, vec![args.common.alpn()?], None).await?;
     // wait for the endpoint to figure out its address before making a ticket
     if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
@@ -761,7 +782,7 @@ impl Drop for UnixSocketGuard {
 async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![])
+    let endpoint = create_endpoint(secret_key, &args.common, vec![], None)
         .await
         .std_context("unable to bind endpoint")?;
     tracing::info!("unix listening on {:?}", socket_path);
@@ -869,8 +890,18 @@ async fn generate_ticket() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
     let args = Args::parse();
+    // `daemon run` is a long-running process, so give it a useful default log
+    // filter when RUST_LOG is unset. Other subcommands keep the quiet default.
+    let daemon_run = matches!(
+        &args.command,
+        Commands::Daemon(args) if matches!(args.command, daemon::DaemonCommand::Run)
+    );
+    let filter = match (std::env::var_os("RUST_LOG"), daemon_run) {
+        (None, true) => tracing_subscriber::EnvFilter::new("dumbpipe=info,iroh=info"),
+        _ => tracing_subscriber::EnvFilter::from_default_env(),
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let res = match args.command {
         Commands::GenerateTicket => generate_ticket().await,
         Commands::Listen(args) => listen_stdio(args).await,
@@ -883,11 +914,15 @@ async fn main() -> Result<()> {
 
         #[cfg(unix)]
         Commands::ConnectUnix(args) => connect_unix(args).await,
+
+        Commands::Daemon(args) => daemon::run(args).await,
     };
     match res {
         Ok(()) => std::process::exit(0),
         Err(e) => {
-            eprintln!("error: {e}");
+            // The alternate form prints the full source chain, so wrapped errors
+            // (e.g. the underlying launchctl/systemctl failure) stay visible.
+            eprintln!("error: {e:#}");
             std::process::exit(1)
         }
     }
