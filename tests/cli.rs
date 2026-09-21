@@ -282,10 +282,19 @@ fn connect_tcp_happy() {
     .stderr_to_stdout() //
     .reader()
     .unwrap();
-    std::thread::sleep(Duration::from_secs(1));
 
-    //
-    let mut conn = TcpStream::connect(host_port).unwrap();
+    // Try to connect at 1 second interval for at most 5 times
+    let Some(mut conn) = (0..5).find_map(|_| {
+        std::thread::sleep(Duration::from_secs(1));
+        match TcpStream::connect(&host_port) {
+            Ok(conn) => Some(conn),
+            Err(err) if err.kind() == io::ErrorKind::ConnectionRefused => None,
+            Err(err) => panic!("{err}"),
+        }
+    }) else {
+        panic!("Connection refused; {MAX_TRIES} max tries reached");
+    };
+
     conn.write_all(b"hello from tcp").unwrap();
     conn.flush().unwrap();
     let mut buf = Vec::new();
