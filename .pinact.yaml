@@ -11,3 +11,8 @@ rules:
       # baseline feature landed upstream.
       - expr: |
           ActionName == "n0-computer/cargo-semver-checks-action"
+  - ignore: true
+    conditions:
+      # n0-owned, no releases cut.
+      - expr: |
+          ActionName == "n0-computer/actions-upload-release-asset"
