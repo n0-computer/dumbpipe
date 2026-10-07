@@ -287,11 +287,12 @@ async fn copy_from_noq(
 /// Print the secret key to stderr if it was generated, so the user can save it.
 fn get_or_create_secret() -> Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
-        Ok(secret) => SecretKey::from_str(&secret).std_context("invalid secret"),
+        Ok(secret) => SecretKey::from_str(&secret)
+            .std_context("Failed to parse IROH_SECRET environment variable as iroh secret key"),
         Err(_) => {
             let key = SecretKey::generate();
             eprintln!(
-                "using secret key {}",
+                "Generated a new endpoint secret. To reuse, set \n\tIROH_SECRET={}",
                 data_encoding::HEXLOWER.encode(&key.to_bytes())
             );
             Ok(key)
