@@ -157,6 +157,18 @@ dumbpipe listen-unix --socket-path /var/run/my-app.sock
 dumbpipe connect-tcp --addr 127.0.0.1:8080 <ticket>
 ```
 
+## Allowlisting remote endpoint ids
+
+Listener commands can restrict incoming iroh connections to known remote endpoint ids:
+
+```bash
+dumbpipe listen-tcp --host localhost:3000 --allow-remote <endpoint-id>
+```
+
+Repeat `--allow-remote` to allow multiple remotes. If the flag is not set, listener commands accept connections from any remote endpoint id.
+
+When the connecting side uses a stable `IROH_SECRET`, `dumbpipe generate-ticket` prints a ticket whose endpoint id can be used in the listener allowlist.
+
 ## Custom ALPNs
 
 Dumbpipe has an expert feature to specify a custom [ALPN](https://en.wikipedia.org/wiki/Application-Layer_Protocol_Negotiation) string. You can use it to interact with

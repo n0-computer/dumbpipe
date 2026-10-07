@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{
     endpoint::{presets, Accepting},
-    Endpoint, EndpointAddr, SecretKey,
+    Endpoint, EndpointAddr, EndpointId, SecretKey,
 };
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
@@ -164,6 +164,9 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
 
 #[derive(Parser, Debug)]
 pub struct ListenArgs {
+    #[clap(flatten)]
+    pub remote_allowlist: RemoteAllowlistArgs,
+
     /// Immediately close our sending side, indicating that we will not transmit any data
     #[clap(long)]
     pub recv_only: bool,
@@ -176,6 +179,9 @@ pub struct ListenArgs {
 pub struct ListenTcpArgs {
     #[clap(long)]
     pub host: String,
+
+    #[clap(flatten)]
+    pub remote_allowlist: RemoteAllowlistArgs,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -217,6 +223,9 @@ pub struct ListenUnixArgs {
     pub socket_path: PathBuf,
 
     #[clap(flatten)]
+    pub remote_allowlist: RemoteAllowlistArgs,
+
+    #[clap(flatten)]
     pub common: CommonArgs,
 }
 
@@ -232,6 +241,55 @@ pub struct ConnectUnixArgs {
 
     #[clap(flatten)]
     pub common: CommonArgs,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct RemoteAllowlistArgs {
+    /// Only accept connections from this remote endpoint id.
+    ///
+    /// May be repeated. If omitted, connections from any remote endpoint id are accepted.
+    #[clap(long = "allow-remote", value_name = "ENDPOINT_ID")]
+    pub allowed_remote_endpoint_ids: Vec<EndpointId>,
+}
+
+fn ensure_remote_endpoint_allowed(
+    remote_endpoint_id: EndpointId,
+    allowlist: &[EndpointId],
+) -> Result<()> {
+    ensure_any!(
+        allowlist.is_empty() || allowlist.contains(&remote_endpoint_id),
+        "remote endpoint id {remote_endpoint_id} is not allowlisted"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_endpoint_allowlist_defaults_to_allow_all() {
+        let remote_endpoint_id = SecretKey::generate().public();
+
+        ensure_remote_endpoint_allowed(remote_endpoint_id, &[]).unwrap();
+    }
+
+    #[test]
+    fn remote_endpoint_allowlist_accepts_listed_id() {
+        let remote_endpoint_id = SecretKey::generate().public();
+
+        ensure_remote_endpoint_allowed(remote_endpoint_id, &[remote_endpoint_id]).unwrap();
+    }
+
+    #[test]
+    fn remote_endpoint_allowlist_rejects_unlisted_id() {
+        let remote_endpoint_id = SecretKey::generate().public();
+        let allowed_endpoint_id = SecretKey::generate().public();
+
+        assert!(
+            ensure_remote_endpoint_allowed(remote_endpoint_id, &[allowed_endpoint_id]).is_err()
+        );
+    }
 }
 
 /// Copy from a reader to a noq stream.
@@ -388,7 +446,14 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        let remote_endpoint_id = &connection.remote_id();
+        let remote_endpoint_id = connection.remote_id();
+        if let Err(cause) = ensure_remote_endpoint_allowed(
+            remote_endpoint_id,
+            &args.remote_allowlist.allowed_remote_endpoint_ids,
+        ) {
+            tracing::warn!("{}", cause);
+            continue;
+        }
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
@@ -581,9 +646,11 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         accepting: Accepting,
         addrs: Vec<std::net::SocketAddr>,
         handshake: bool,
+        allowed_remote_endpoint_ids: Vec<EndpointId>,
     ) -> Result<()> {
         let connection = accepting.await.std_context("error accepting connection")?;
-        let remote_endpoint_id = &connection.remote_id();
+        let remote_endpoint_id = connection.remote_id();
+        ensure_remote_endpoint_allowed(remote_endpoint_id, &allowed_remote_endpoint_ids)?;
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
@@ -620,8 +687,12 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         };
         let addrs = addrs.clone();
         let handshake = !args.common.is_custom_alpn();
+        let allowed_remote_endpoint_ids = args.remote_allowlist.allowed_remote_endpoint_ids.clone();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, addrs, handshake).await {
+            if let Err(cause) =
+                handle_endpoint_accept(connecting, addrs, handshake, allowed_remote_endpoint_ids)
+                    .await
+            {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -685,10 +756,12 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         accepting: Accepting,
         socket_path: PathBuf,
         handshake: bool,
+        allowed_remote_endpoint_ids: Vec<EndpointId>,
     ) -> Result<()> {
         tracing::trace!("accepting connection");
         let connection = accepting.await.std_context("error accepting connection")?;
-        let remote_endpoint_id = &connection.remote_id();
+        let remote_endpoint_id = connection.remote_id();
+        ensure_remote_endpoint_allowed(remote_endpoint_id, &allowed_remote_endpoint_ids)?;
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (s, mut r) = connection
             .accept_bi()
@@ -731,8 +804,16 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         };
         let socket_path = socket_path.clone();
         let handshake = !args.common.is_custom_alpn();
+        let allowed_remote_endpoint_ids = args.remote_allowlist.allowed_remote_endpoint_ids.clone();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, socket_path, handshake).await {
+            if let Err(cause) = handle_endpoint_accept(
+                connecting,
+                socket_path,
+                handshake,
+                allowed_remote_endpoint_ids,
+            )
+            .await
+            {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
