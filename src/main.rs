@@ -250,6 +250,9 @@ async fn copy_to_noq(
         res = tokio::io::copy(&mut from, &mut send) => {
             let size = res?;
             send.finish()?;
+            // Wait for the remote to acknowledge it has received all of the data.
+            // Closing the endpoint too soon after `finish` may otherwise drop data still in flight.
+            send.stopped().await.map_err(io::Error::other)?;
             Ok(size)
         }
         _ = token.cancelled() => {
@@ -885,7 +888,10 @@ async fn generate_ticket() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
     let args = Args::parse();
     let res = match args.command {
         Commands::GenerateTicket => generate_ticket().await,
