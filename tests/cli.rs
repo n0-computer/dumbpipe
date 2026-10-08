@@ -492,3 +492,58 @@ mod unix_socket_tests {
         connect_stderr_thread.join().ok();
     }
 }
+
+/// Tracing output must go to stderr, since stdout carries the pipe data.
+#[test]
+fn logs_go_to_stderr() {
+    use std::{
+        io::{BufRead, BufReader, Seek},
+        process::{Command, Stdio},
+    };
+
+    // stdout goes to a file rather than a pipe, so that logs written to stdout
+    // can't fill the pipe and block the child before it prints the ticket
+    let mut stdout_file = tempfile::tempfile().unwrap();
+    let mut listen = Command::new(dumbpipe_bin())
+        .arg("listen")
+        .env("RUST_LOG", "trace")
+        .stdin(Stdio::null())
+        .stdout(stdout_file.try_clone().unwrap())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // read stderr until the ticket is printed, collecting everything before it
+    let mut stderr = BufReader::new(listen.stderr.take().unwrap());
+    let mut stderr_text = String::new();
+    loop {
+        let mut line = String::new();
+        if stderr.read_line(&mut line).unwrap() == 0 {
+            panic!("listen exited before printing a ticket:\n{stderr_text}");
+        }
+        stderr_text.push_str(&line);
+        if line.starts_with("dumbpipe connect") {
+            break;
+        }
+    }
+
+    listen.kill().unwrap();
+    listen.wait().unwrap();
+
+    let mut stdout = Vec::new();
+    stdout_file.rewind().unwrap();
+    stdout_file.read_to_end(&mut stdout).unwrap();
+    // only show the start of stdout on failure, trace output is very long
+    let stdout = String::from_utf8_lossy(&stdout);
+    let head: Vec<&str> = stdout.lines().take(5).collect();
+    assert!(
+        stdout.is_empty(),
+        "stdout should be empty, got {} lines, starting with:\n{}",
+        stdout.lines().count(),
+        head.join("\n")
+    );
+    assert!(
+        stderr_text.contains("TRACE") || stderr_text.contains("DEBUG"),
+        "expected tracing output on stderr"
+    );
+}
