@@ -14,7 +14,7 @@ readme = "README.md"
 rust-version = "1.91"
 
 [dependencies]
-clap = { version = "4.4.10", features = ["derive"] }
+clap = { version = "4.4.10", features = ["derive", "env"] }
 hex = "0.4.3"
 iroh = { version = "1.0.0", default-features = false, features = ["tls-ring"] }
 iroh-tickets = "1.0.0"

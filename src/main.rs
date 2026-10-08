@@ -9,8 +9,8 @@ use std::{
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{
-    endpoint::{presets, Accepting},
-    Endpoint, EndpointAddr, SecretKey,
+    endpoint::{default_relay_mode, presets, Accepting},
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
 };
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
@@ -35,6 +35,8 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Connecting to a endpoint id is independent of its IP address. Dumbpipe will try
 /// to establish a direct connection even through NATs and firewalls. If that
 /// fails, it will fall back to using a relay server.
+///
+/// You can add your own relay servers and disable the default one.
 ///
 /// For all subcommands, you can specify a secret key using the IROH_SECRET
 /// environment variable. If you don't, a random one will be generated.
@@ -139,6 +141,19 @@ pub struct CommonArgs {
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+
+    /// An additional relay server to use, on top of the default relay
+    /// servers. Can be repeated to add several relays.
+    #[clap(long = "relay", env = "DUMBPIPE_RELAYS", value_delimiter = ',')]
+    pub relays: Vec<RelayUrl>,
+
+    /// Do not use the default relay servers.
+    #[clap(
+        long,
+        env = "DUMBPIPE_NO_DEFAULT_RELAYS",
+        value_parser = clap::builder::FalseyValueParser::new(),
+    )]
+    pub no_default_relays: bool,
 }
 
 impl CommonArgs {
@@ -151,6 +166,22 @@ impl CommonArgs {
 
     fn is_custom_alpn(&self) -> bool {
         self.custom_alpn.is_some()
+    }
+
+    fn relay_mode(&self) -> RelayMode {
+        match (self.no_default_relays, self.relays.is_empty()) {
+            (false, true) => default_relay_mode(),
+            (true, true) => RelayMode::Disabled,
+            (no_defaults, _) => {
+                let map = if no_defaults {
+                    RelayMap::empty()
+                } else {
+                    default_relay_mode().relay_map()
+                };
+                map.extend(&self.relays.iter().cloned().collect());
+                RelayMode::Custom(map)
+            }
+        }
     }
 }
 
@@ -299,6 +330,16 @@ fn get_or_create_secret() -> Result<SecretKey> {
     }
 }
 
+/// Wait for the endpoint to find its home relay, unless relays are disabled.
+async fn wait_online(endpoint: &Endpoint, common: &CommonArgs) {
+    if common.no_default_relays && common.relays.is_empty() {
+        return;
+    }
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
+}
+
 /// Create a new iroh endpoint.
 async fn create_endpoint(
     secret_key: SecretKey,
@@ -307,7 +348,8 @@ async fn create_endpoint(
 ) -> Result<Endpoint> {
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
-        .alpns(alpns);
+        .alpns(alpns)
+        .relay_mode(common.relay_mode());
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr(addr)?;
     }
@@ -361,9 +403,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before making a ticket
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
+    wait_online(&endpoint, &args.common).await;
     let addr = endpoint.addr();
     let short = create_short_ticket(&addr);
     let ticket = EndpointTicket::new(addr);
@@ -471,9 +511,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
+    wait_online(&endpoint, &args.common).await;
 
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
@@ -550,9 +588,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
+    wait_online(&endpoint, &args.common).await;
     let addr = endpoint.addr();
     let short = create_short_ticket(&addr);
     let ticket = EndpointTicket::new(addr);
@@ -654,9 +690,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
+    wait_online(&endpoint, &args.common).await;
     let addr = endpoint.addr();
     let short = create_short_ticket(&addr);
     let ticket = EndpointTicket::new(addr);
@@ -782,9 +816,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
+    wait_online(&endpoint, &args.common).await;
 
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
