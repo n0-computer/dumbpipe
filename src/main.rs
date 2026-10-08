@@ -250,6 +250,9 @@ async fn copy_to_noq(
         res = tokio::io::copy(&mut from, &mut send) => {
             let size = res?;
             send.finish()?;
+            // Wait for the remote to acknowledge it has received all of the data.
+            // Closing the endpoint too soon after `finish` may otherwise drop data still in flight.
+            send.stopped().await.map_err(io::Error::other)?;
             Ok(size)
         }
         _ = token.cancelled() => {
