@@ -615,13 +615,18 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         let Some(incoming) = incoming else {
             break;
         };
-        let Ok(connecting) = incoming.accept() else {
-            break;
+        let accepting = match incoming.accept() {
+            Ok(accepting) => accepting,
+            Err(err) => {
+                tracing::warn!("error accepting connection: {err}");
+                // if accept fails, we want to continue accepting connections
+                continue;
+            }
         };
         let addrs = addrs.clone();
         let handshake = !args.common.is_custom_alpn();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, addrs, handshake).await {
+            if let Err(cause) = handle_endpoint_accept(accepting, addrs, handshake).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -726,13 +731,18 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         let Some(incoming) = incoming else {
             break;
         };
-        let Ok(connecting) = incoming.accept() else {
-            break;
+        let accepting = match incoming.accept() {
+            Ok(accepting) => accepting,
+            Err(err) => {
+                tracing::warn!("error accepting connection: {err}");
+                // if accept fails, we want to continue accepting connections
+                continue;
+            }
         };
         let socket_path = socket_path.clone();
         let handshake = !args.common.is_custom_alpn();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, socket_path, handshake).await {
+            if let Err(cause) = handle_endpoint_accept(accepting, socket_path, handshake).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
