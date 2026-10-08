@@ -155,22 +155,14 @@ fn connect_listen_ctrlc_connect() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = EndpointTicket::from_str(ticket).unwrap();
 
-    // TEMP FIX FOR CI ERROR DEBUGGING
-    // stderr goes to a file rather than /dev/null, so that we can show why
-    // connect failed. this test consistently fails on our ubuntu stable ci box
-    // when connect's stderr is /dev/null
-    let connect_stderr = tempfile::NamedTempFile::new().unwrap();
     let mut connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
-        .stderr_path(connect_stderr.path())
+        .stderr_null()
         .stdout_capture()
         .reader()
         .unwrap();
     // wait until we get a line from the listen process
-    if let Err(err) = read_ascii_lines(1, &mut connect) {
-        let stderr = std::fs::read_to_string(connect_stderr.path()).unwrap_or_default();
-        panic!("{err}\nconnect stderr:\n{stderr}");
-    }
+    read_ascii_lines(1, &mut connect).unwrap();
     for pid in connect.pids() {
         signal::kill(Pid::from_raw(pid as i32), Signal::SIGINT).unwrap();
     }
