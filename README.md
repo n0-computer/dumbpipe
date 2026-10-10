@@ -145,6 +145,33 @@ ZELLIJ_SOCKET_DIR=/tmp/zj-remote zellij attach remote-task-1234
 
 # Advanced features
 
+## Daemon: many named tunnels from one config
+
+The `dumbpipe daemon` subcommand runs any number of incoming and outgoing
+tunnels over a single endpoint, driven by a TOML config file. Each `connect`
+entry exposes a local TCP port that forwards to a remote endpoint under a name,
+and each `accept` entry forwards incoming named streams to a local TCP backend.
+Tunnels can be protected with a shared token.
+
+Build the config with the `accept` and `connect` subcommands (or edit the TOML
+by hand):
+
+```
+# On the server: expose a backend, protected by a generated token.
+dumbpipe daemon accept web localhost:3000 --secure
+dumbpipe daemon run        # run it; prints the endpoint id and a ticket
+
+# On the client: forward a local port to the server's "web" tunnel.
+dumbpipe daemon connect <server-id-or-ticket>:web 127.0.0.1:8080 --token <token>
+dumbpipe daemon run
+```
+
+`daemon run` runs in the foreground; `daemon install` / `start` / `stop` /
+`uninstall` manage it as a user-level service instead. By default the daemon
+watches its config file and applies changes (added or removed tunnels) while
+running. See [docs/daemon.md](docs/daemon.md) for the config format, tokens,
+reloading, the service commands, key handling, and more.
+
 ## Combining Listeners
 
 You can mix and match listeners. For example, forward from a remote Unix socket to a local TCP port:
