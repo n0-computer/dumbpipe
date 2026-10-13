@@ -42,6 +42,7 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 /// You can also specify a port for the endpoint. If you don't, a random one
 /// will be chosen.
 #[derive(Parser, Debug)]
+#[clap(version)]
 pub struct Args {
     #[clap(subcommand)]
     pub command: Commands,
