@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{
     endpoint::{presets, Accepting},
-    Endpoint, EndpointAddr, SecretKey,
+    Endpoint, EndpointAddr, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
 };
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
@@ -136,6 +136,12 @@ pub struct CommonArgs {
     /// Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
+
+    /// A relay server to use instead of the default n0 relays.
+    ///
+    /// Can be repeated to use multiple relay servers.
+    #[clap(long = "relay", value_name = "URL")]
+    pub relays: Vec<RelayUrl>,
 
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
@@ -317,6 +323,15 @@ async fn create_endpoint(
     }
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr(addr)?;
+    }
+    if !common.relays.is_empty() {
+        let relay_map = common
+            .relays
+            .iter()
+            .cloned()
+            .map(RelayConfig::from)
+            .collect::<RelayMap>();
+        builder = builder.relay_mode(RelayMode::Custom(relay_map));
     }
     let endpoint = builder.bind().await.anyerr()?;
     Ok(endpoint)
