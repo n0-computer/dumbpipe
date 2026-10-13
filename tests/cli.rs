@@ -501,11 +501,11 @@ fn logs_go_to_stderr() {
         process::{Command, Stdio},
     };
 
-    // stdout goes to a file rather than a pipe, so that logs written to stdout
-    // can't fill the pipe and block the child before it prints the ticket
+    // stdout goes to a file rather than a pipe, if any std output exists.
     let mut stdout_file = tempfile::tempfile().unwrap();
     let mut listen = Command::new(dumbpipe_bin())
         .arg("listen")
+        // set log level to trace so we ensure we get log output
         .env("RUST_LOG", "trace")
         .stdin(Stdio::null())
         .stdout(stdout_file.try_clone().unwrap())
@@ -513,7 +513,8 @@ fn logs_go_to_stderr() {
         .spawn()
         .unwrap();
 
-    // read stderr until the ticket is printed, collecting everything before it
+    // loop stderr text until the ticket is printed as a sanity check showing
+    // we have listened for long enough to generated logs
     let mut stderr = BufReader::new(listen.stderr.take().unwrap());
     let mut stderr_text = String::new();
     loop {
