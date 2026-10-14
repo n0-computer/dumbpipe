@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{
     endpoint::{presets, Accepting},
-    Endpoint, EndpointAddr, SecretKey,
+    Endpoint, EndpointAddr, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
 };
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
@@ -137,6 +137,18 @@ pub struct CommonArgs {
     #[clap(long)]
     pub custom_alpn: Option<String>,
 
+    /// A relay server to use instead of the default n0 relays.
+    ///
+    /// Can be repeated to use multiple relay servers.
+    #[clap(long = "relay", value_name = "URL")]
+    pub relays: Vec<RelayUrl>,
+
+    /// Disable all relay useage.
+    ///
+    /// Will fail if used together with a `--relay` flag.
+    #[clap(long)]
+    pub disable_relays: bool,
+
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -251,6 +263,9 @@ async fn copy_to_noq(
         res = tokio::io::copy(&mut from, &mut send) => {
             let size = res?;
             send.finish()?;
+            // Wait for the remote to acknowledge it has received all of the data.
+            // Closing the endpoint too soon after `finish` may otherwise drop data still in flight.
+            send.stopped().await.map_err(io::Error::other)?;
             Ok(size)
         }
         _ = token.cancelled() => {
@@ -306,6 +321,7 @@ async fn create_endpoint(
     common: &CommonArgs,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint> {
+    // use default relays and other n0 default infrastructure
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(alpns);
@@ -314,6 +330,30 @@ async fn create_endpoint(
     }
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr(addr)?;
+    }
+
+    match (common.disable_relays, !common.relays.is_empty()) {
+        (true, true) => {
+            // relays are disabled but the also user added custom relay URLs
+            bail_any!("`--disable-relays` flag used, but additional relay urls were added using the `--relay` flag.\nMust use one or the other.");
+        }
+        (true, false) => {
+            // relays usage is disabled
+            builder = builder.relay_mode(RelayMode::Disabled)
+        }
+        (false, true) => {
+            // user added custom relays
+            let relay_map = common
+                .relays
+                .iter()
+                .cloned()
+                .map(RelayConfig::from)
+                .collect::<RelayMap>();
+            builder = builder.relay_mode(RelayMode::Custom(relay_map));
+        }
+        (false, false) => {
+            // no flags used, use default relays added in the N0 preset
+        }
     }
     let endpoint = builder.bind().await.anyerr()?;
     Ok(endpoint)
@@ -896,7 +936,10 @@ async fn generate_ticket() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
     let args = Args::parse();
     let res = match args.command {
         Commands::GenerateTicket => generate_ticket().await,
