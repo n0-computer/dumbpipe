@@ -471,11 +471,8 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         .std_context("unable to bind endpoint")?;
     tracing::info!("tcp listening on {:?}", addrs);
 
-    // Wait for our own endpoint to be ready before trying to connect.
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
-
+    // Bind before waiting for the endpoint to come online, so that tcp clients
+    // connecting early are queued instead of refused.
     let tcp_listener = match tokio::net::TcpListener::bind(addrs.as_slice()).await {
         Ok(tcp_listener) => tcp_listener,
         Err(cause) => {
@@ -483,6 +480,14 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             return Ok(());
         }
     };
+
+    // Wait for our endpoint to be connected to a relay before trying to connect.
+    //
+    // Relays are necessary if you need to hole-punch between two
+    // devices in order to get a direct connection,
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
     async fn handle_tcp_accept(
         next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
         addr: EndpointAddr,
@@ -782,16 +787,29 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         .std_context("unable to bind endpoint")?;
     tracing::info!("unix listening on {:?}", socket_path);
 
-    // Wait for our own endpoint to be ready before trying to connect.
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
-        eprintln!("Warning: Failed to connect to the home relay");
-    }
-
     // Remove existing socket file if it exists
     if let Err(e) = tokio::fs::remove_file(&socket_path).await {
         if e.kind() != io::ErrorKind::NotFound {
             bail_any!("failed to remove existing socket file: {}", e);
         }
+    }
+
+    // Bind before waiting for the endpoint to come online and connecting, so
+    // that unix clients connecting early are queued instead of refused.
+    let unix_listener = UnixListener::bind(&socket_path)
+        .with_std_context(|_| format!("failed to bind Unix socket at {socket_path:?}"))?;
+    tracing::info!("bound local unix socket: {:?}", socket_path);
+
+    let _guard = UnixSocketGuard {
+        path: socket_path.clone(),
+    };
+
+    // Wait for our endpoint to be connected to a relay before trying to connect.
+    //
+    // Relays are necessary if you need to hole-punch between two
+    // devices in order to get a direct connection,
+    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
     }
 
     let addr = args.ticket.endpoint_addr();
@@ -801,14 +819,6 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         .await
         .std_context("failed to connect to remote endpoint")?;
     tracing::info!("connected to remote endpoint successfully");
-
-    let unix_listener = UnixListener::bind(&socket_path)
-        .with_std_context(|_| format!("failed to bind Unix socket at {socket_path:?}"))?;
-    tracing::info!("bound local unix socket: {:?}", socket_path);
-
-    let _guard = UnixSocketGuard {
-        path: socket_path.clone(),
-    };
 
     async fn handle_unix_accept(
         next: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
