@@ -28,6 +28,7 @@ n0-error = "1.0.0"
 
 [dev-dependencies]
 duct = "1.1.1"
+iroh-relay = { version = "1.0.0", features = ["server"] }
 nix = { version = "0.31", features = ["signal", "process"] }
 rand = "0.10"
 tempfile = "3.8"

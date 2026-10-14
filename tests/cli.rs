@@ -293,6 +293,136 @@ fn connect_tcp_happy() {
     assert_eq!(&buf, b"hello from listen\n");
 }
 
+/// An iroh relay server running in-process, listening on plain http on localhost.
+struct LocalRelay {
+    server: iroh_relay::server::Server,
+    url: iroh::RelayUrl,
+    // declared last so it is dropped after the server it drives
+    _rt: tokio::runtime::Runtime,
+}
+
+impl LocalRelay {
+    fn spawn() -> Self {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // no tls config, so the relay only listens on http
+        let mut relay = iroh_relay::server::RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0));
+        relay.key_cache_capacity = Some(1024);
+        let mut config = iroh_relay::server::ServerConfig::default();
+        config.relay = Some(relay);
+        let server = rt
+            .block_on(iroh_relay::server::Server::spawn(config))
+            .unwrap();
+        let url = format!("http://{}", server.http_addr().unwrap())
+            .parse()
+            .unwrap();
+        Self {
+            server,
+            url,
+            _rt: rt,
+        }
+    }
+
+    /// The number of connections the relay has accepted.
+    fn accepts(&self) -> u64 {
+        self.server.metrics().server.accepts.get()
+    }
+}
+
+/// Read the header from a listen process until the ticket line, and parse the ticket.
+///
+/// Unlike reading a fixed number of lines, this also works when listen prints
+/// a warning before the ticket.
+fn read_listen_ticket(listen: &mut impl Read) -> (String, EndpointTicket) {
+    let mut header = String::new();
+    loop {
+        let line = read_ascii_lines(1, listen).unwrap();
+        if line.is_empty() {
+            panic!("listen exited before printing a ticket:\n{header}");
+        }
+        let line = String::from_utf8(line).unwrap();
+        header.push_str(&line);
+        if line.starts_with("dumbpipe connect") {
+            let ticket = line.split_ascii_whitespace().last().unwrap();
+            return (header, EndpointTicket::from_str(ticket).unwrap());
+        }
+    }
+}
+
+/// With `--relay`, both sides use only the given relay.
+#[test]
+fn relay_flag_uses_custom_relay() {
+    let relay = LocalRelay::spawn();
+    let relay_url = relay.url.to_string();
+
+    let mut listen = duct::cmd(dumbpipe_bin(), ["listen", "--relay", &relay_url])
+        .env_remove("RUST_LOG") // disable tracing
+        .stdin_bytes(b"hello from listen\n")
+        .stderr_to_stdout() //
+        .reader()
+        .unwrap();
+    let (header, ticket) = read_listen_ticket(&mut listen);
+    // listen came online through the local relay, and advertises only it
+    assert!(
+        !header.contains("Failed to connect to the home relay"),
+        "listen did not connect to the local relay:\n{header}"
+    );
+    let relay_urls: Vec<_> = ticket.endpoint_addr().relay_urls().collect();
+    assert_eq!(relay_urls, vec![&relay.url]);
+
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        ["connect", "--relay", &relay_url, &ticket.to_string()],
+    )
+    .env_remove("RUST_LOG") // disable tracing
+    .stdin_bytes(b"hello from connect\n")
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
+    assert!(connect.stdout.starts_with(b"hello from listen\n"));
+
+    let mut listen_stdout = Vec::new();
+    listen.read_to_end(&mut listen_stdout).unwrap();
+    assert!(String::from_utf8_lossy(&listen_stdout).contains("hello from connect"));
+
+    // both endpoints connected to the local relay
+    assert!(
+        relay.accepts() >= 2,
+        "expected both endpoints to connect to the local relay, got {} accepts",
+        relay.accepts()
+    );
+}
+
+/// `--disable-relays` together with `--relay` is an error.
+#[test]
+fn disable_relays_with_relay_flag_errors() {
+    // the relay is never contacted, so it doesn't need to exist
+    let output = duct::cmd(
+        dumbpipe_bin(),
+        [
+            "listen",
+            "--disable-relays",
+            "--relay",
+            "http://127.0.0.1:1",
+        ],
+    )
+    .env_remove("RUST_LOG") // disable tracing
+    .stdin_null()
+    .stdout_null()
+    .stderr_capture()
+    .unchecked()
+    .run()
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr:\n{stderr}");
+    assert!(stderr.contains("--relay"), "stderr:\n{stderr}");
+    // it fails before printing a ticket
+    assert!(!stderr.contains("dumbpipe connect"), "stderr:\n{stderr}");
+}
+
 /// Integration test for Unix-domain socket tunneling.
 ///
 /// Validates end-to-end operation between `listen-unix` and `connect-unix`:
