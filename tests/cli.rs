@@ -135,6 +135,45 @@ fn connect_listen_custom_alpn_happy() {
     assert!(listen_stdout.starts_with(connect_to_listen));
 }
 
+/// Tests that `--no-default-relays` doesn't break direct localhost connections.
+///
+/// Both sides refuse to use any relay at all, so the only way this test can
+/// pass is if the connection is established directly.
+#[test]
+fn connect_listen_no_default_relays_happy() {
+    let listen_to_connect = b"hello from listen";
+    let connect_to_listen = b"hello from connect";
+    let mut listen = duct::cmd(dumbpipe_bin(), ["listen", "--no-default-relays"])
+        .env_remove("RUST_LOG") // disable tracing
+        .stdin_bytes(listen_to_connect)
+        .stderr_to_stdout() //
+        .reader()
+        .unwrap();
+    // read the first 3 lines of the header, and parse the last token as a ticket
+    let header = read_ascii_lines(3, &mut listen).unwrap();
+    let header = String::from_utf8(header).unwrap();
+    let ticket = header.split_ascii_whitespace().last().unwrap();
+    let ticket = EndpointTicket::from_str(ticket).unwrap();
+
+    let connect = duct::cmd(
+        dumbpipe_bin(),
+        ["connect", "--no-default-relays", &ticket.to_string()],
+    )
+    .env_remove("RUST_LOG") // disable tracing
+    .stdin_bytes(connect_to_listen)
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
+
+    assert!(connect.status.success());
+    assert!(connect.stdout.starts_with(listen_to_connect));
+
+    let mut listen_stdout = Vec::new();
+    listen.read_to_end(&mut listen_stdout).unwrap();
+    assert!(listen_stdout.starts_with(connect_to_listen));
+}
+
 #[cfg(unix)]
 #[test]
 fn connect_listen_ctrlc_connect() {
