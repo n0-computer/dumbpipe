@@ -1,6 +1,6 @@
 [package]
 name = "dumbpipe"
-version = "0.39.0"
+version = "0.40.1"
 edition = "2021"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "n0 team"]
 keywords = ["netcat", "cli", "network", "p2p", "holepunching"]
@@ -28,6 +28,7 @@ n0-error = "1.0.0"
 
 [dev-dependencies]
 duct = "1.1.1"
+iroh-relay = { version = "1.0.0", features = ["server"] }
 nix = { version = "0.31", features = ["signal", "process"] }
 rand = "0.10"
 tempfile = "3.8"

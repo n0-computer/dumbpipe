@@ -9,8 +9,8 @@ use std::{
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
 use iroh::{
-    endpoint::{presets, Accepting},
-    Endpoint, EndpointAddr, SecretKey,
+    endpoint::{presets, Accepting, VarInt},
+    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
 };
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::{
@@ -137,6 +137,18 @@ pub struct CommonArgs {
     #[clap(long)]
     pub custom_alpn: Option<String>,
 
+    /// A relay server to use instead of the default n0 relays.
+    ///
+    /// Can be repeated to use multiple relay servers.
+    #[clap(long = "relay", value_name = "URL")]
+    pub relays: Vec<RelayUrl>,
+
+    /// Disable all relay useage.
+    ///
+    /// Will fail if used together with a `--relay` flag.
+    #[clap(long)]
+    pub disable_relays: bool,
+
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -251,6 +263,9 @@ async fn copy_to_noq(
         res = tokio::io::copy(&mut from, &mut send) => {
             let size = res?;
             send.finish()?;
+            // Wait for the remote to acknowledge it has received all of the data.
+            // Closing the endpoint too soon after `finish` may otherwise drop data still in flight.
+            send.stopped().await.map_err(io::Error::other)?;
             Ok(size)
         }
         _ = token.cancelled() => {
@@ -306,6 +321,7 @@ async fn create_endpoint(
     common: &CommonArgs,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint> {
+    // use default relays and other n0 default infrastructure
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(alpns);
@@ -314,6 +330,30 @@ async fn create_endpoint(
     }
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr(addr)?;
+    }
+
+    match (common.disable_relays, !common.relays.is_empty()) {
+        (true, true) => {
+            // relays are disabled, but the user also added relay URLs
+            bail_any!("`--disable-relays` flag used, but additional relay urls were added using the `--relay` flag.\nMust use one or the other.");
+        }
+        (true, false) => {
+            // relays usage is disabled
+            builder = builder.relay_mode(RelayMode::Disabled)
+        }
+        (false, true) => {
+            // user added custom relays
+            let relay_map = common
+                .relays
+                .iter()
+                .cloned()
+                .map(RelayConfig::from)
+                .collect::<RelayMap>();
+            builder = builder.relay_mode(RelayMode::Custom(relay_map));
+        }
+        (false, false) => {
+            // no flags used, use default relays added in the N0 preset
+        }
     }
     let endpoint = builder.bind().await.anyerr()?;
     Ok(endpoint)
@@ -377,9 +417,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         eprintln!("or:\ndumbpipe connect {short}");
     }
 
-    loop {
+    let res = loop {
         let Some(connecting) = endpoint.accept().await else {
-            break;
+            break Ok(());
         };
         let connection = match connecting.await {
             Ok(connection) => connection,
@@ -389,38 +429,56 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        let remote_endpoint_id = &connection.remote_id();
+        let remote_endpoint_id = connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
-        let (s, mut r) = match connection.accept_bi().await {
+        let (s, r) = match connection.accept_bi().await {
             Ok(x) => x,
             Err(cause) => {
                 tracing::warn!("error accepting stream: {}", cause);
+                connection.close(VarInt::from_u32(1), b"error accepting stream");
                 // if accept_bi fails, we want to continue accepting connections
                 continue;
             }
         };
+
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        if !args.common.is_custom_alpn() {
-            // read the handshake and verify it
-            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+        let res = handle_stdio_connection(s, r, remote_endpoint_id, &args).await;
+        if res.is_err() {
+            connection.close(VarInt::from_u32(1), b"stream error");
         }
-        if args.recv_only {
-            tracing::info!(
-                "forwarding stdout to {} (ignoring stdin)",
-                remote_endpoint_id
-            );
-            forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
-        } else {
-            tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
-            forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
-        }
-        // stop accepting connections after the first successful one
-        break;
-    }
+
+        // stop accepting connections after the first one
+        break res;
+    };
+
+    // closes any remaining connections
     endpoint.close().await;
-    Ok(())
+    res
+}
+
+/// Check the handshake on an accepted stream, then forward stdin/stdout over it.
+async fn handle_stdio_connection(
+    s: noq::SendStream,
+    mut r: noq::RecvStream,
+    remote_endpoint_id: EndpointId,
+    args: &ListenArgs,
+) -> Result<()> {
+    if !args.common.is_custom_alpn() {
+        // read the handshake and verify it
+        let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
+        r.read_exact(&mut buf).await.anyerr()?;
+        ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+    }
+    if args.recv_only {
+        tracing::info!(
+            "forwarding stdout to {} (ignoring stdin)",
+            remote_endpoint_id
+        );
+        forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await
+    } else {
+        tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
+        forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await
+    }
 }
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
@@ -896,7 +954,10 @@ async fn generate_ticket() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
     let args = Args::parse();
     let res = match args.command {
         Commands::GenerateTicket => generate_ticket().await,
