@@ -173,3 +173,14 @@ echo request1.bin | dumbpipe connect <ticket> --custom-alpn utf8:/iroh-bytes/2 >
 
 if request1.bin contained a valid request for the `/iroh-bytes/2` protocol, response1.bin will
 now contain the response.
+
+## Custom relay servers
+
+By default, dumbpipe uses n0's relay servers.
+You can add your own relay servers on top of the defaults with `--relay` (repeatable), 
+or disable the default relays entirely with `--no-default-relays`:
+
+```
+dumbpipe listen --relay https://relay.example.com.
+dumbpipe listen --no-default-relays --relay https://relay.example.com.
+```
